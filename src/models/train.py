@@ -1,11 +1,8 @@
-"""
-Churn Model Training
-======================
-Trains XGBoost + LightGBM churn models with:
-- TimeSeriesSplit cross-validation (no data leakage)
-- Optuna hyperparameter tuning
-- MLflow experiment tracking
-- SHAP explainability
+"""Churn model training with hyperparameter optimization.
+
+Trains XGBoost churn models using TimeSeriesSplit cross-validation,
+Optuna hyperparameter tuning, MLflow experiment tracking, and SHAP
+explainability. Includes a logistic regression baseline for comparison.
 """
 
 import argparse
@@ -34,6 +31,15 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def load_data(data_path: Path) -> tuple[pd.DataFrame, pd.Series]:
+    """Load and split parquet data into features and target.
+
+    Args:
+        data_path: Path to the parquet file containing policy data.
+
+    Returns:
+        A tuple of (X, y) where X is the feature DataFrame (excluding
+        churn_label and policy_id) and y is the churn_label Series.
+    """
     df = pd.read_parquet(data_path)
     X = df.drop(columns=["churn_label", "policy_id"])
     y = df["churn_label"]
@@ -41,6 +47,17 @@ def load_data(data_path: Path) -> tuple[pd.DataFrame, pd.Series]:
 
 
 def objective_xgb(trial, X_train, y_train, cv):
+    """Optuna objective function for XGBoost hyperparameter search.
+
+    Args:
+        trial: Optuna trial object for suggesting hyperparameters.
+        X_train: Training feature DataFrame.
+        y_train: Training target Series.
+        cv: Cross-validation splitter instance.
+
+    Returns:
+        Mean ROC-AUC score across cross-validation folds.
+    """
     params = {
         "n_estimators": trial.suggest_int("n_estimators", 100, 800),
         "max_depth": trial.suggest_int("max_depth", 3, 8),
@@ -61,12 +78,33 @@ def objective_xgb(trial, X_train, y_train, cv):
 
 
 def train_baseline(X_train, y_train):
+    """Train a logistic regression baseline model.
+
+    Args:
+        X_train: Training feature DataFrame.
+        y_train: Training target Series.
+
+    Returns:
+        Fitted LogisticRegression model.
+    """
     model = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
     model.fit(X_train, y_train)
     return model
 
 
 def train_with_optuna(X_train, y_train, n_trials: int = 50) -> XGBClassifier:
+    """Train an XGBoost model with Optuna hyperparameter optimization.
+
+    Args:
+        X_train: Training feature DataFrame.
+        y_train: Training target Series.
+        n_trials: Number of Optuna optimization trials to run.
+
+    Returns:
+        A tuple of (model, best_cv_auc) where model is the fitted
+        XGBClassifier with best parameters and best_cv_auc is the
+        best cross-validation AUC score achieved.
+    """
     cv = TimeSeriesSplit(n_splits=5)
     study = optuna.create_study(direction="maximize")
     study.optimize(
@@ -82,6 +120,15 @@ def train_with_optuna(X_train, y_train, n_trials: int = 50) -> XGBClassifier:
 
 
 def main(args):
+    """Run the full training pipeline with MLflow tracking.
+
+    Trains a logistic baseline and an Optuna-tuned XGBoost model,
+    logs metrics and artifacts to MLflow, and registers the best model.
+
+    Args:
+        args: Parsed command-line arguments with data_path,
+            experiment_name, and n_trials attributes.
+    """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(args.experiment_name)
 

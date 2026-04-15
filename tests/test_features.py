@@ -1,3 +1,9 @@
+"""Tests for actuarial feature engineering.
+
+Covers the ActuarialFeatureBuilder transformer and the build_feature_matrix
+helper, including property-based tests via Hypothesis.
+"""
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -8,6 +14,11 @@ from src.features.actuarial_features import ActuarialFeatureBuilder, build_featu
 
 @pytest.fixture
 def sample_data():
+    """Create a minimal policy DataFrame for testing.
+
+    Returns:
+        DataFrame with 5 sample policies covering various feature scenarios.
+    """
     return pd.DataFrame({
         "policy_id": ["POL001", "POL002", "POL003", "POL004", "POL005"],
         "lob": ["auto", "home", "auto", "health", "auto"],
@@ -28,10 +39,17 @@ def sample_data():
 
 @pytest.fixture
 def builder():
+    """Create a fresh ActuarialFeatureBuilder instance.
+
+    Returns:
+        Unfitted ActuarialFeatureBuilder.
+    """
     return ActuarialFeatureBuilder()
 
 
 class TestActuarialFeatureBuilder:
+    """Tests for the ActuarialFeatureBuilder transformer."""
+
     def test_fit_learns_market_premiums(self, builder, sample_data):
         builder.fit(sample_data)
         assert "auto" in builder.market_avg_premiums_
@@ -132,6 +150,8 @@ class TestActuarialFeatureBuilder:
 
 
 class TestBuildFeatureMatrix:
+    """Tests for the build_feature_matrix convenience function."""
+
     def test_excludes_non_feature_cols(self, sample_data):
         sample_data["churn_label"] = [0, 1, 0, 1, 0]
         result = build_feature_matrix(sample_data)
@@ -155,6 +175,14 @@ class TestBuildFeatureMatrix:
 )
 @settings(max_examples=50)
 def test_feature_builder_no_crash_on_valid_input(premium, tenure, age, claim_count):
+    """Verify the feature builder handles arbitrary valid inputs without errors.
+
+    Args:
+        premium: Randomly generated annual premium value.
+        tenure: Randomly generated tenure in months.
+        age: Randomly generated insured age.
+        claim_count: Randomly generated claim count.
+    """
     df = pd.DataFrame({
         "lob": ["auto"],
         "annual_premium": [premium],

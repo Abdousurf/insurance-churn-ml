@@ -1,3 +1,9 @@
+"""Model evaluation utilities for churn prediction.
+
+Provides business-oriented metrics (lift, precision/recall at top-k) and
+visualization functions for lift curves, calibration plots, and ROC curves.
+"""
+
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -18,6 +24,17 @@ def compute_business_metrics(
     y_prob: np.ndarray,
     top_k: float = 0.15,
 ) -> dict:
+    """Compute business-oriented metrics at a given population percentile.
+
+    Args:
+        y_true: Array of true binary labels.
+        y_prob: Array of predicted churn probabilities.
+        top_k: Fraction of the population to target (e.g., 0.15 for top 15%).
+
+    Returns:
+        Dict with keys: precision, recall, lift, top_k, churners_captured,
+        and total_churners.
+    """
     n = len(y_true)
     k = int(n * top_k)
 
@@ -43,6 +60,15 @@ def compute_business_metrics(
 
 
 def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
+    """Plot a cumulative gains (lift) curve.
+
+    Args:
+        y_true: Array of true binary labels.
+        y_prob: Array of predicted churn probabilities.
+
+    Returns:
+        Matplotlib Figure with the lift curve.
+    """
     n = len(y_true)
     sorted_idx = np.argsort(y_prob)[::-1]
     y_sorted = np.asarray(y_true)[sorted_idx]
@@ -65,6 +91,16 @@ def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> plt.Figure:
+    """Plot a probability calibration curve.
+
+    Args:
+        y_true: Array of true binary labels.
+        y_prob: Array of predicted churn probabilities.
+        n_bins: Number of bins for the calibration curve.
+
+    Returns:
+        Matplotlib Figure with the calibration plot.
+    """
     fraction_of_positives, mean_predicted_value = calibration_curve(
         y_true, y_prob, n_bins=n_bins, strategy="uniform"
     )
@@ -82,6 +118,15 @@ def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -
 
 
 def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
+    """Plot a Receiver Operating Characteristic (ROC) curve.
+
+    Args:
+        y_true: Array of true binary labels.
+        y_prob: Array of predicted churn probabilities.
+
+    Returns:
+        Matplotlib Figure with the ROC curve and AUC annotation.
+    """
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     auc = roc_auc_score(y_true, y_prob)
 
@@ -98,6 +143,16 @@ def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def full_evaluation_report(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
+    """Generate a comprehensive evaluation report.
+
+    Args:
+        y_true: Array of true binary labels.
+        y_prob: Array of predicted churn probabilities.
+
+    Returns:
+        Dict containing auc_roc, avg_precision, brier_score, and
+        business metrics at the 10% and 15% population thresholds.
+    """
     return {
         "auc_roc": round(roc_auc_score(y_true, y_prob), 4),
         "avg_precision": round(average_precision_score(y_true, y_prob), 4),

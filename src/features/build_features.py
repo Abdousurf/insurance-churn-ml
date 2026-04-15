@@ -1,3 +1,9 @@
+"""Feature building pipeline for insurance churn prediction.
+
+Provides functions to construct training and inference feature matrices
+from raw policy data using actuarial domain features.
+"""
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -16,6 +22,20 @@ def build_training_features(
     data_path: Path,
     output_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
+    """Build training feature matrix from raw parquet data.
+
+    Reads raw policy data, applies actuarial feature engineering, and
+    returns the feature matrix with the target variable separated.
+
+    Args:
+        data_path: Path to the input parquet file containing raw policy data.
+        output_path: Optional path to save the feature matrix with labels
+            as a parquet file. If None, no file is written.
+
+    Returns:
+        A tuple of (X, y) where X is the feature DataFrame and y is the
+        churn_label Series.
+    """
     df = pd.read_parquet(data_path)
 
     y = df["churn_label"]
@@ -36,6 +56,15 @@ def build_training_features(
 
 
 def build_inference_features(df: pd.DataFrame, builder: ActuarialFeatureBuilder) -> pd.DataFrame:
+    """Build feature matrix for inference using a pre-fitted builder.
+
+    Args:
+        df: Raw policy DataFrame to transform.
+        builder: A pre-fitted ActuarialFeatureBuilder instance.
+
+    Returns:
+        DataFrame containing only the model feature columns.
+    """
     df_features = builder.transform(df)
     feature_cols = [c for c in df_features.columns if c not in NON_FEATURE_COLS]
     return df_features[feature_cols]

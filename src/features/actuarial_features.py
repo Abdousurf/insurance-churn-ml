@@ -1,11 +1,8 @@
-"""
-Actuarial Feature Engineering
-================================
-Domain-specific features for insurance churn prediction.
-Based on actuarial pricing theory and customer behavior research.
+"""Actuarial feature engineering for insurance churn prediction.
 
-Key insight: overpriced policies (premium >> market rate) and
-negative claims experiences are the strongest churn drivers.
+Domain-specific features based on actuarial pricing theory and customer
+behavior research. Key insight: overpriced policies (premium >> market rate)
+and negative claims experiences are the strongest churn drivers.
 """
 
 import pandas as pd
@@ -15,20 +12,37 @@ from typing import Optional
 
 
 class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
-    """
-    Build actuarial-inspired features for churn prediction.
+    """Sklearn-compatible transformer that builds actuarial churn features.
 
-    Features derived from:
-    - Generalized Linear Models used in actuarial pricing
-    - Customer Lifetime Value (CLV) theory
-    - Behavioral economics of insurance switching
+    Features are derived from generalized linear models used in actuarial
+    pricing, customer lifetime value (CLV) theory, and behavioral economics
+    of insurance switching.
+
+    Attributes:
+        market_rate_col: Optional column name for external market rates.
+        market_avg_premiums_: Dict of median premiums per LOB learned during fit.
     """
 
     def __init__(self, market_rate_col: Optional[str] = None):
+        """Initialize the ActuarialFeatureBuilder.
+
+        Args:
+            market_rate_col: Optional column name containing external market
+                rate data. If None, market rates are estimated from the data.
+        """
         self.market_rate_col = market_rate_col
         self.market_avg_premiums_ = {}
 
     def fit(self, X: pd.DataFrame, y=None):
+        """Learn market average premiums per line of business.
+
+        Args:
+            X: Input DataFrame with policy data.
+            y: Ignored. Present for sklearn API compatibility.
+
+        Returns:
+            self
+        """
         # Learn market average premiums per LOB for rate comparison
         if "lob" in X.columns and "annual_premium" in X.columns:
             self.market_avg_premiums_ = (
@@ -37,6 +51,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Apply all actuarial feature transformations.
+
+        Args:
+            X: Input DataFrame with policy data.
+
+        Returns:
+            DataFrame with original columns plus engineered features.
+        """
         df = X.copy()
 
         df = self._premium_features(df)
@@ -48,7 +70,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return df
 
     def _premium_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Premium-related features: pricing adequacy and sensitivity."""
+        """Generate premium-related features for pricing adequacy and sensitivity.
+
+        Args:
+            df: DataFrame with policy data.
+
+        Returns:
+            DataFrame with premium feature columns added.
+        """
 
         if "annual_premium" in df.columns and "lob" in df.columns:
             # Premium vs. market rate (key churn driver)
@@ -70,7 +99,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return df
 
     def _claims_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Claims experience features: satisfaction proxies."""
+        """Generate claims experience features as satisfaction proxies.
+
+        Args:
+            df: DataFrame with policy data.
+
+        Returns:
+            DataFrame with claims feature columns added.
+        """
 
         if "claim_count_12m" in df.columns:
             df["has_recent_claim"] = (df["claim_count_12m"] > 0).astype(int)
@@ -91,7 +127,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return df
 
     def _loyalty_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Loyalty and retention indicators."""
+        """Generate loyalty and retention indicator features.
+
+        Args:
+            df: DataFrame with policy data.
+
+        Returns:
+            DataFrame with loyalty feature columns added.
+        """
 
         if "tenure_months" in df.columns:
             df["tenure_years"] = df["tenure_months"] / 12
@@ -114,7 +157,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return df
 
     def _portfolio_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Multi-line policy indicators (bundling effect)."""
+        """Generate multi-line policy indicators for bundling effects.
+
+        Args:
+            df: DataFrame with policy data.
+
+        Returns:
+            DataFrame with portfolio feature columns added.
+        """
 
         if "policy_count_active" in df.columns:
             df["is_multi_line"] = (df["policy_count_active"] > 1).astype(int)
@@ -124,7 +174,14 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return df
 
     def _lifecycle_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Life stage and channel features."""
+        """Generate life stage and acquisition channel features.
+
+        Args:
+            df: DataFrame with policy data.
+
+        Returns:
+            DataFrame with lifecycle feature columns added.
+        """
 
         if "insured_age" in df.columns:
             # Age segments (pricing-aligned)
@@ -146,9 +203,17 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
 
 
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build the full feature matrix for model training.
-    Returns only numeric columns suitable for tree-based models.
+    """Build the full feature matrix for model training.
+
+    Applies actuarial feature engineering and returns only numeric columns
+    suitable for tree-based models, excluding IDs, raw categoricals, and
+    the target variable.
+
+    Args:
+        df: Raw policy DataFrame including all required columns.
+
+    Returns:
+        DataFrame containing only numeric feature columns.
     """
     builder = ActuarialFeatureBuilder()
     df_features = builder.fit_transform(df)
