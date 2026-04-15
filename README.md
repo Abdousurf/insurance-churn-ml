@@ -7,6 +7,24 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green)](https://fastapi.tiangolo.com)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
 [![XGBoost](https://img.shields.io/badge/XGBoost-2.0-orange)](https://xgboost.readthedocs.io)
+[![CI](https://github.com/Abdousurf/insurance-churn-ml/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdousurf/insurance-churn-ml/actions)
+[![DVC](https://img.shields.io/badge/DVC-versioned-945dd6)](https://dvc.org)
+[![Open Data](https://img.shields.io/badge/Open%20Data-UCI%20COIL%202000-green)](https://archive.ics.uci.edu/dataset/125/insurance+company+benchmark+coil+2000)
+
+## Open Data Source
+
+**Dataset : UCI Insurance Company Benchmark — COIL 2000**
+
+| Attribut | Détail |
+|----------|--------|
+| Source | UCI Machine Learning Repository |
+| URL | [archive.ics.uci.edu/dataset/125](https://archive.ics.uci.edu/dataset/125/insurance+company+benchmark+coil+2000) |
+| Licence | Creative Commons Attribution 4.0 (CC BY 4.0) |
+| Volume | 9 068 clients · 86 features · cible binaire (~6% positifs) |
+| Features | Socio-démographie + types de contrats + historique sinistres |
+| Pertinence | Classification binaire déséquilibrée — réaliste pour l'assurance |
+
+Le script `src/data/download_opendata.py` télécharge le dataset et crée des **features actuarielles** (premium proxy, claim count, multi-line indicator, income segment) pour enrichir le signal ML.
 
 ## Business Problem
 
@@ -70,6 +88,11 @@ Raw Data
 | API | FastAPI + Pydantic |
 | Containerization | Docker + Docker Compose |
 | Testing | pytest + hypothesis |
+| **CI/CD** | **GitHub Actions** (quality gate AUC ≥ 0.70) |
+| **Data versioning** | **DVC 3.x** |
+| **Drift monitoring** | **Evidently AI** |
+| **Code quality** | **ruff · black · isort · pre-commit** |
+| **Model governance** | **Model Card auto-générée** |
 
 ## Project Structure
 

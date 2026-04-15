@@ -1,0 +1,84 @@
+# DVC Pipeline — Insurance Churn ML (MLOps)
+# Versionnage des données + reproducibilité des expériences
+# Commandes : dvc repro | dvc dag | dvc metrics show | dvc params diff
+
+stages:
+
+  download_data:
+    cmd: python src/data/download_opendata.py
+    deps:
+      - src/data/download_opendata.py
+    outs:
+      - data/raw/coil2000/:
+          cache: true
+    params:
+      - params.yaml:
+          - data.years
+
+  prepare_features:
+    cmd: python src/features/build_features.py
+    deps:
+      - src/features/build_features.py
+      - src/features/actuarial_features.py
+      - data/raw/coil2000/
+    outs:
+      - data/processed/coil2000_train.parquet
+      - data/processed/coil2000_test.parquet
+    params:
+      - params.yaml:
+          - features.n_top_features
+          - features.random_seed
+
+  train:
+    cmd: >-
+      python src/models/train.py
+      --experiment-name ${model.experiment_name}
+      --data-path data/processed/coil2000_train.parquet
+    deps:
+      - src/models/train.py
+      - data/processed/coil2000_train.parquet
+    outs:
+      - models/churn_model.pkl:
+          cache: true
+      - models/feature_names.json
+    params:
+      - params.yaml:
+          - model.experiment_name
+          - model.xgb_n_estimators
+          - model.xgb_max_depth
+          - model.xgb_learning_rate
+          - model.lgbm_n_estimators
+          - model.cv_folds
+    metrics:
+      - reports/metrics/train_metrics.json:
+          cache: false
+
+  evaluate:
+    cmd: >-
+      python src/models/evaluate.py
+      --min-auc ${model.min_auc_gate}
+      --data-path data/processed/coil2000_test.parquet
+    deps:
+      - src/models/evaluate.py
+      - models/churn_model.pkl
+      - data/processed/coil2000_test.parquet
+    params:
+      - params.yaml:
+          - model.min_auc_gate
+    metrics:
+      - reports/metrics/eval_metrics.json:
+          cache: false
+    plots:
+      - reports/plots/roc_curve.json
+      - reports/plots/precision_recall.json
+      - reports/plots/shap_summary.png
+
+  drift_detection:
+    cmd: python src/monitoring/drift_detection.py
+    deps:
+      - src/monitoring/drift_detection.py
+      - data/processed/coil2000_train.parquet
+      - data/processed/coil2000_test.parquet
+    metrics:
+      - reports/monitoring/drift_report.json:
+          cache: false

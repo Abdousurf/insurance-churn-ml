@@ -1,0 +1,25 @@
+# Paramètres DVC — versionnés avec le code (MLOps reproducibilité)
+data:
+  source: uci_coil2000
+  url: "https://archive.ics.uci.edu/ml/machine-learning-databases/tic-mld/"
+  licence: "CC BY 4.0"
+  years: null  # dataset statique
+
+features:
+  n_top_features: 30
+  random_seed: 42
+  test_size: 0.2
+
+model:
+  experiment_name: churn_coil2000
+  min_auc_gate: 0.70       # Gate CI/CD — build fail si AUC < 0.70
+  xgb_n_estimators: 300
+  xgb_max_depth: 5
+  xgb_learning_rate: 0.05
+  lgbm_n_estimators: 300
+  cv_folds: 5
+
+monitoring:
+  drift_threshold: 0.15
+  auc_drop_threshold: 0.05
+  retraining_trigger: weekly

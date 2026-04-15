@@ -14,3 +14,15 @@ matplotlib==3.8.2
 seaborn==0.13.2
 pytest==7.4.4
 hypothesis==6.92.6
+requests==2.31.0
+scipy==1.12.0
+# MLOps
+evidently==0.4.22
+dvc==3.42.0
+# DevOps
+pre-commit==3.6.2
+ruff==0.3.2
+black==24.2.0
+isort==5.13.2
+nbstripout==0.7.1
+detect-secrets==1.4.0
