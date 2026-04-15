@@ -1,8 +1,18 @@
-"""Prediction and batch scoring for insurance churn models.
+"""Make churn predictions on new insurance policies using the trained model.
 
-Loads production models from MLflow and provides single-DataFrame and
-batch file scoring with risk tier classification.
+Loads the saved model and scores individual policies or entire files,
+assigning each customer a risk level (low, medium, high, critical).
 """
+
+# ───────────────────────────────────────────────────────
+# WHAT THIS FILE DOES (in plain English):
+# This file uses the trained model to predict which
+# customers are likely to leave. It can:
+# - Load the saved production model
+# - Score one batch of customer data at a time
+# - Assign each customer a risk level (low/medium/high/critical)
+# - Save the results to a file
+# ───────────────────────────────────────────────────────
 
 import mlflow
 import pandas as pd
@@ -13,16 +23,17 @@ from src.features.actuarial_features import ActuarialFeatureBuilder
 from src.features.build_features import NON_FEATURE_COLS
 
 
+# Where to find MLflow and which model to load
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 MODEL_NAME = "insurance_churn_xgb"
 MODEL_STAGE = "Production"
 
 
 def load_production_model():
-    """Load the production churn model from MLflow model registry.
+    """Load the live production model that's been saved in MLflow.
 
     Returns:
-        The registered production sklearn model.
+        The trained model, ready to make predictions.
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
@@ -34,25 +45,32 @@ def predict_dataframe(
     model,
     builder: ActuarialFeatureBuilder,
 ) -> pd.DataFrame:
-    """Score a DataFrame and return churn probabilities with risk tiers.
+    """Predict churn risk for a table of customers and assign risk levels.
+
+    Each customer gets a probability (0-100% chance of leaving) and a
+    risk category: low, medium, high, or critical.
 
     Args:
-        df: Raw policy DataFrame to score.
-        model: Fitted sklearn-compatible model with predict_proba.
-        builder: Pre-fitted ActuarialFeatureBuilder instance.
+        df: Raw policy data for the customers to score.
+        model: The trained prediction model.
+        builder: A feature builder that's already been set up on training data.
 
     Returns:
-        DataFrame with policy_id (if present), churn_probability,
-        and risk_tier columns.
+        A table with each customer's policy ID (if available), their predicted
+        churn probability, and their risk level.
     """
+    # Turn raw data into the features the model expects
     df_features = builder.transform(df)
     feature_cols = [c for c in df_features.columns if c not in NON_FEATURE_COLS]
     X = df_features[feature_cols]
 
+    # Get the model's predicted probability of churn for each customer
     probas = model.predict_proba(X)[:, 1]
 
+    # Build the results table with risk tiers
     result = df[["policy_id"]].copy() if "policy_id" in df.columns else pd.DataFrame()
     result["churn_probability"] = probas
+    # Assign a risk level based on the probability
     result["risk_tier"] = pd.cut(
         probas,
         bins=[0, 0.2, 0.45, 0.70, 1.0],
@@ -68,23 +86,28 @@ def batch_score(
     model=None,
     builder: ActuarialFeatureBuilder | None = None,
 ):
-    """Score a parquet file of policies and write results to disk.
+    """Score an entire file of policies and save the results.
+
+    Reads a file of customer data, predicts churn risk for each one,
+    and writes the results to a new file.
 
     Args:
-        input_path: Path to the input parquet file.
-        output_path: Path to write the scored output parquet file.
-        model: Optional pre-loaded model. If None, loads from MLflow.
-        builder: Optional pre-fitted feature builder. If None, creates
-            a new one and fits on the input data.
+        input_path: Where the customer data file is located.
+        output_path: Where to save the scored results.
+        model: The trained model. If not provided, loads the production model automatically.
+        builder: The feature builder. If not provided, creates a new one from the data.
 
     Returns:
-        DataFrame with scoring results.
+        A table with the scoring results for all customers.
     """
+    # Load the model if one wasn't provided
     if model is None:
         model = load_production_model()
+    # Create a feature builder if one wasn't provided
     if builder is None:
         builder = ActuarialFeatureBuilder()
 
+    # Read the data, build features, make predictions, and save
     df = pd.read_parquet(input_path)
     builder.fit(df)
     results = predict_dataframe(df, model, builder)
@@ -93,6 +116,7 @@ def batch_score(
     return results
 
 
+# This section runs only when you execute this file directly from the command line
 if __name__ == "__main__":
     import argparse
 

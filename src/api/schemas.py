@@ -1,8 +1,18 @@
-"""Pydantic schemas for the insurance churn prediction API.
+"""Data shapes for the churn prediction API — defines what goes in and what comes out.
 
-Defines request and response models for single and batch prediction
-endpoints, including input validation for policy features.
+These schemas make sure that incoming requests have all the right fields
+and that responses always follow a consistent format.
 """
+
+# ───────────────────────────────────────────────────────
+# WHAT THIS FILE DOES (in plain English):
+# This file defines the "shapes" of data that the API
+# accepts and returns. It makes sure that:
+# - Incoming customer data has all required fields
+# - Field values are within valid ranges (e.g., age 18-100)
+# - Response data always follows the same structure
+# Think of it as a contract between the API and its users.
+# ───────────────────────────────────────────────────────
 
 from typing import Optional
 
@@ -10,23 +20,23 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class PolicyFeatures(BaseModel):
-    """Input schema for a single policyholder's features.
+    """The customer data needed to make a churn prediction.
 
     Attributes:
-        policy_id: Unique policy identifier.
-        lob: Line of business (auto, home, liability, health).
-        annual_premium: Annual premium amount in EUR.
-        tenure_months: Policy tenure in months.
-        renewal_count: Number of past renewals.
-        claim_count_12m: Claims filed in the last 12 months.
-        claim_count_all: Total claims filed over the policy lifetime.
-        claim_settled_pct: Fraction of claims that have been settled.
-        days_to_settle_avg: Average days to settle a claim.
-        insured_age: Age of the insured person.
-        channel: Acquisition channel (Direct, Broker, Online, Agent).
-        policy_count_active: Number of active policies held by the customer.
-        premium_change_pct: Year-over-year premium change percentage.
-        last_contact_days: Days since last customer contact, if known.
+        policy_id: A unique identifier for the policy.
+        lob: Type of insurance (auto, home, liability, health).
+        annual_premium: How much the customer pays per year in EUR.
+        tenure_months: How many months this customer has been with us.
+        renewal_count: How many times they've renewed their policy.
+        claim_count_12m: How many claims they've filed in the last year.
+        claim_count_all: Total claims they've ever filed with us.
+        claim_settled_pct: What fraction of their claims have been resolved (0 to 1).
+        days_to_settle_avg: How many days it takes on average to settle their claims.
+        insured_age: How old the insured person is.
+        channel: How they signed up (Direct, Broker, Online, Agent).
+        policy_count_active: How many active policies they currently hold.
+        premium_change_pct: How much their premium changed from last year (in percent).
+        last_contact_days: How many days since we last contacted them, if known.
     """
 
     policy_id: str
@@ -47,16 +57,16 @@ class PolicyFeatures(BaseModel):
     @field_validator("lob")
     @classmethod
     def validate_lob(cls, v):
-        """Validate and normalize the line of business field.
+        """Check that the insurance type is one we support and make it lowercase.
 
         Args:
-            v: Raw lob string value.
+            v: The insurance type value provided by the user.
 
         Returns:
-            Lowercased lob string.
+            The insurance type in lowercase.
 
         Raises:
-            ValueError: If lob is not one of the allowed values.
+            ValueError: If the insurance type isn't one of: auto, home, liability, health.
         """
         allowed = {"auto", "home", "liability", "health"}
         if v.lower() not in allowed:
@@ -66,16 +76,16 @@ class PolicyFeatures(BaseModel):
     @field_validator("channel")
     @classmethod
     def validate_channel(cls, v):
-        """Validate the acquisition channel field.
+        """Check that the sign-up channel is one we recognize.
 
         Args:
-            v: Raw channel string value.
+            v: The channel value provided by the user.
 
         Returns:
-            The validated channel string.
+            The channel value, unchanged if valid.
 
         Raises:
-            ValueError: If channel is not one of the allowed values.
+            ValueError: If the channel isn't one of: Direct, Broker, Online, Agent.
         """
         allowed = {"Direct", "Broker", "Online", "Agent"}
         if v not in allowed:
@@ -84,15 +94,15 @@ class PolicyFeatures(BaseModel):
 
 
 class ChurnPrediction(BaseModel):
-    """Response schema for a single churn prediction.
+    """The prediction result for a single customer.
 
     Attributes:
-        policy_id: The policy that was scored.
-        churn_probability: Predicted probability of churn (0 to 1).
-        risk_tier: Categorical risk level (low, medium, high, critical).
-        recommended_action: Suggested retention action for this tier.
-        estimated_clv: Estimated customer lifetime value in EUR.
-        model_version: Identifier of the model version used.
+        policy_id: Which policy was scored.
+        churn_probability: How likely the customer is to leave (0 to 1).
+        risk_tier: A simple category: low, medium, high, or critical.
+        recommended_action: What the retention team should do about this customer.
+        estimated_clv: How much revenue this customer is expected to bring over time, in EUR.
+        model_version: Which version of the model made this prediction.
     """
 
     policy_id: str
@@ -104,22 +114,22 @@ class ChurnPrediction(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    """Request schema for batch churn predictions.
+    """A request to predict churn for multiple customers at once.
 
     Attributes:
-        policies: List of PolicyFeatures to score.
+        policies: A list of customer records to score.
     """
 
     policies: list[PolicyFeatures]
 
 
 class BatchResponse(BaseModel):
-    """Response schema for batch churn predictions.
+    """The results of a batch prediction, with a summary of risk.
 
     Attributes:
-        predictions: List of individual ChurnPrediction results.
-        total_at_risk: Count of policies in high or critical risk tiers.
-        total_premium_at_risk: Sum of annual premiums for at-risk policies.
+        predictions: Individual prediction results for each customer.
+        total_at_risk: How many customers are in the high or critical risk groups.
+        total_premium_at_risk: Total yearly premium from those high-risk customers, in EUR.
     """
 
     predictions: list[ChurnPrediction]

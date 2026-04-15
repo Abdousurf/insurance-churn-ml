@@ -1,8 +1,20 @@
-"""Model evaluation utilities for churn prediction.
+"""Measure how well the churn model performs, using both technical and business-friendly metrics.
 
-Provides business-oriented metrics (lift, precision/recall at top-k) and
-visualization functions for lift curves, calibration plots, and ROC curves.
+Provides ways to check model quality from a business perspective (e.g., "if we
+contact the top 15% riskiest customers, how many actual churners do we catch?")
+and creates charts to visualize the results.
 """
+
+# ───────────────────────────────────────────────────────
+# WHAT THIS FILE DOES (in plain English):
+# This file measures how good the churn prediction model
+# is. It calculates scores that tell us things like:
+# - How well the model ranks customers by churn risk
+# - If we focus on the riskiest customers, how many real
+#   churners do we actually catch?
+# - Are the model's probability estimates trustworthy?
+# It also creates charts to visualize these results.
+# ───────────────────────────────────────────────────────
 
 import numpy as np
 import pandas as pd
@@ -24,28 +36,38 @@ def compute_business_metrics(
     y_prob: np.ndarray,
     top_k: float = 0.15,
 ) -> dict:
-    """Compute business-oriented metrics at a given population percentile.
+    """Calculate business-friendly performance metrics for a given target group.
+
+    Answers the question: "If we focus our retention efforts on the top X%
+    riskiest customers, how effective would that be?"
 
     Args:
-        y_true: Array of true binary labels.
-        y_prob: Array of predicted churn probabilities.
-        top_k: Fraction of the population to target (e.g., 0.15 for top 15%).
+        y_true: The actual outcomes — did each customer really leave? (0 or 1)
+        y_prob: The model's predicted chance of each customer leaving (0 to 1).
+        top_k: What fraction of customers to target (e.g., 0.15 means top 15%).
 
     Returns:
-        Dict with keys: precision, recall, lift, top_k, churners_captured,
-        and total_churners.
+        A dictionary with: how precise our targeting is, what fraction of
+        churners we'd catch, how much better than random this is (lift),
+        and raw counts.
     """
     n = len(y_true)
+    # Figure out how many customers fall in the "top k%" group
     k = int(n * top_k)
 
+    # Sort customers from highest predicted risk to lowest
     sorted_idx = np.argsort(y_prob)[::-1]
     y_sorted = np.asarray(y_true)[sorted_idx]
 
+    # Count how many actual churners are in our target group
     churners_in_top_k = y_sorted[:k].sum()
     total_churners = np.asarray(y_true).sum()
 
+    # What percentage of our target group are actual churners?
     precision_at_k = churners_in_top_k / k if k > 0 else 0.0
+    # What percentage of all churners did we catch?
     recall_at_k = churners_in_top_k / total_churners if total_churners > 0 else 0.0
+    # How much better is this than picking customers at random?
     base_rate = total_churners / n if n > 0 else 0.0
     lift = precision_at_k / base_rate if base_rate > 0 else 0.0
 
@@ -60,24 +82,32 @@ def compute_business_metrics(
 
 
 def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
-    """Plot a cumulative gains (lift) curve.
+    """Create a chart showing how much better the model is than random guessing.
+
+    The lift curve shows: as we contact more and more customers (starting
+    from the riskiest), what percentage of all churners have we found?
+    A good model finds most churners quickly; random guessing follows a
+    straight diagonal line.
 
     Args:
-        y_true: Array of true binary labels.
-        y_prob: Array of predicted churn probabilities.
+        y_true: The actual outcomes — did each customer really leave? (0 or 1)
+        y_prob: The model's predicted chance of each customer leaving (0 to 1).
 
     Returns:
-        Matplotlib Figure with the lift curve.
+        A chart (matplotlib Figure) showing the lift curve.
     """
     n = len(y_true)
+    # Sort customers from highest predicted risk to lowest
     sorted_idx = np.argsort(y_prob)[::-1]
     y_sorted = np.asarray(y_true)[sorted_idx]
 
+    # Calculate running totals as we go down the list
     percentiles = np.arange(1, n + 1) / n
     cumulative_churners = np.cumsum(y_sorted)
     total_churners = y_sorted.sum()
     cumulative_recall = cumulative_churners / total_churners
 
+    # Draw the chart
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(percentiles * 100, cumulative_recall * 100, label="Model", linewidth=2)
     ax.plot([0, 100], [0, 100], "--", color="gray", label="Random")
@@ -91,20 +121,25 @@ def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> plt.Figure:
-    """Plot a probability calibration curve.
+    """Create a chart showing whether the model's probability estimates are accurate.
+
+    If the model says "30% chance of churning" for a group of customers,
+    do roughly 30% of them actually churn? This chart checks that.
 
     Args:
-        y_true: Array of true binary labels.
-        y_prob: Array of predicted churn probabilities.
-        n_bins: Number of bins for the calibration curve.
+        y_true: The actual outcomes — did each customer really leave? (0 or 1)
+        y_prob: The model's predicted chance of each customer leaving (0 to 1).
+        n_bins: How many groups to split the predictions into for comparison.
 
     Returns:
-        Matplotlib Figure with the calibration plot.
+        A chart (matplotlib Figure) showing predicted vs. actual probabilities.
     """
+    # Split predictions into groups and compare predicted vs. actual rates
     fraction_of_positives, mean_predicted_value = calibration_curve(
         y_true, y_prob, n_bins=n_bins, strategy="uniform"
     )
 
+    # Draw the chart — a perfect model follows the diagonal line
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Model")
     ax.plot([0, 1], [0, 1], "--", color="gray", label="Perfectly calibrated")
@@ -118,18 +153,23 @@ def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -
 
 
 def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
-    """Plot a Receiver Operating Characteristic (ROC) curve.
+    """Create a chart showing the model's ability to tell churners from non-churners.
+
+    The ROC curve shows the trade-off between catching more churners (good)
+    and falsely flagging non-churners (bad). The area under the curve (AUC)
+    gives a single score — closer to 1.0 is better, 0.5 is random guessing.
 
     Args:
-        y_true: Array of true binary labels.
-        y_prob: Array of predicted churn probabilities.
+        y_true: The actual outcomes — did each customer really leave? (0 or 1)
+        y_prob: The model's predicted chance of each customer leaving (0 to 1).
 
     Returns:
-        Matplotlib Figure with the ROC curve and AUC annotation.
+        A chart (matplotlib Figure) with the ROC curve and its AUC score.
     """
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     auc = roc_auc_score(y_true, y_prob)
 
+    # Draw the chart
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(fpr, tpr, linewidth=2, label=f"AUC = {auc:.3f}")
     ax.plot([0, 1], [0, 1], "--", color="gray")
@@ -143,15 +183,15 @@ def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def full_evaluation_report(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
-    """Generate a comprehensive evaluation report.
+    """Create a complete quality report with all key metrics in one place.
 
     Args:
-        y_true: Array of true binary labels.
-        y_prob: Array of predicted churn probabilities.
+        y_true: The actual outcomes — did each customer really leave? (0 or 1)
+        y_prob: The model's predicted chance of each customer leaving (0 to 1).
 
     Returns:
-        Dict containing auc_roc, avg_precision, brier_score, and
-        business metrics at the 10% and 15% population thresholds.
+        A dictionary with the overall quality score (AUC), precision score,
+        calibration score, and business metrics at the 10% and 15% targeting levels.
     """
     return {
         "auc_roc": round(roc_auc_score(y_true, y_prob), 4),
