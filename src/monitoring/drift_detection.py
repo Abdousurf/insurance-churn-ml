@@ -252,7 +252,7 @@ if __name__ == "__main__":
         test  = pd.read_parquet(processed / "coil2000_test.parquet")
 
         result = detect_data_drift(train, test, target_col="CARAVAN")
-        print(f"\nRésultat drift :")
+        print("\nRésultat drift :")
         print(json.dumps(result, indent=2, default=str))
     else:
         print("⚠️  Données non disponibles — exécuter src/data/download_opendata.py d'abord")

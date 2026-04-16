@@ -16,7 +16,6 @@ assigning each customer a risk level (low, medium, high, critical).
 
 import mlflow
 import pandas as pd
-import numpy as np
 from pathlib import Path
 
 from src.features.actuarial_features import ActuarialFeatureBuilder

@@ -14,7 +14,6 @@ from raw policy records using insurance-specific calculations.
 # ───────────────────────────────────────────────────────
 
 import pandas as pd
-import numpy as np
 from pathlib import Path
 
 from src.features.actuarial_features import ActuarialFeatureBuilder

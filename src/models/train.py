@@ -20,7 +20,6 @@ the winning model for later use.
 import argparse
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 import optuna
 import shap
@@ -31,10 +30,9 @@ from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
 
 from src.features.actuarial_features import ActuarialFeatureBuilder
-from src.models.evaluate import plot_lift_curve, plot_calibration, compute_business_metrics
+from src.models.evaluate import plot_lift_curve, compute_business_metrics
 
 # Suppress noisy warnings that clutter the output
 warnings.filterwarnings("ignore")
@@ -246,7 +244,7 @@ def main(args):
         )
 
         # Print a summary of how both models performed
-        print(f"\n── Results ──────────────────────────────────────")
+        print("\n── Results ──────────────────────────────────────")
         print(f"  XGBoost AUC-ROC:      {auc_xgb:.4f}")
         print(f"  Lift at top 15%:      {business_metrics['lift']:.2f}x")
         print(f"  Recall at top 15%:    {business_metrics['recall']:.1%}")

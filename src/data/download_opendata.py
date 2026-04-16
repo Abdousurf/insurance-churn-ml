@@ -22,8 +22,6 @@ Mapping actuariel :
 """
 
 import logging
-import zipfile
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -176,11 +174,11 @@ if __name__ == "__main__":
     df_test  = engineer_actuarial_features(df_test)
     save_processed(df_train, df_test)
 
-    print(f"\n📊 Dataset COIL 2000 — prêt pour entraînement")
+    print("\n📊 Dataset COIL 2000 — prêt pour entraînement")
     print(f"  Train : {len(df_train):,} lignes | {df_train.shape[1]} features")
     print(f"  Test  : {len(df_test):,} lignes")
     print(f"  Target positifs train : {df_train['CARAVAN'].mean():.1%}")
-    print(f"\nFeatures actuarielles ajoutées :")
+    print("\nFeatures actuarielles ajoutées :")
     new_cols = ["premium_total_proxy", "claim_count_proxy", "nb_product_types",
                 "is_multiline", "income_segment", "actuarial_risk_score"]
     print(df_train[new_cols].describe())

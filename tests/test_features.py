@@ -15,7 +15,6 @@ flags the right customers, and handles a wide range of inputs without errors.
 # ───────────────────────────────────────────────────────
 
 import pytest
-import numpy as np
 import pandas as pd
 from hypothesis import given, strategies as st, settings
 

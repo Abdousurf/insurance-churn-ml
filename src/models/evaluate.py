@@ -17,7 +17,6 @@ and creates charts to visualize the results.
 # ───────────────────────────────────────────────────────
 
 import numpy as np
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -25,7 +24,6 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
     brier_score_loss,
-    precision_recall_curve,
     roc_curve,
     calibration_curve,
 )
