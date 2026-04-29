@@ -1,17 +1,29 @@
-"""Data shapes for the churn prediction API — defines what goes in and what comes out.
+"""Schémas Pydantic décrivant les entrées et sorties de l'API.
 
-These schemas make sure that incoming requests have all the right fields
-and that responses always follow a consistent format.
+Pydantic est une bibliothèque qui valide automatiquement le format des
+données qu'on reçoit et qu'on renvoie. C'est l'équivalent d'un "contrat"
+entre l'API et ses appelants : si la requête ne respecte pas le format
+attendu (mauvais type, valeur hors plage…), Pydantic la rejette en
+amont avec un message d'erreur clair, sans qu'on ait à écrire la
+moindre validation à la main.
+
+Ce module définit quatre schémas :
+
+    * :class:`PolicyFeatures`  — les données d'**un client** en entrée.
+    * :class:`ChurnPrediction` — la prédiction renvoyée pour un client.
+    * :class:`BatchRequest`    — entrée du mode "score plusieurs clients".
+    * :class:`BatchResponse`   — sortie du mode batch.
 """
 
 # ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file defines the "shapes" of data that the API
-# accepts and returns. It makes sure that:
-# - Incoming customer data has all required fields
-# - Field values are within valid ranges (e.g., age 18-100)
-# - Response data always follows the same structure
-# Think of it as a contract between the API and its users.
+# RÔLE DE CE FICHIER (en clair) :
+# Il décrit "à quoi doit ressembler" une requête envoyée à
+# l'API et "à quoi va ressembler" la réponse :
+#   - quels champs sont obligatoires
+#   - quels types ils doivent avoir (chiffre, texte…)
+#   - quelles valeurs sont acceptées (âge entre 18 et 100, etc.)
+# Si l'utilisateur envoie quelque chose d'incorrect, l'API
+# refuse poliment au lieu de planter.
 # ───────────────────────────────────────────────────────
 
 from typing import Optional
@@ -20,89 +32,93 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class PolicyFeatures(BaseModel):
-    """The customer data needed to make a churn prediction.
+    """Données d'un client telles que le client (CRM, app web…) les envoie.
 
     Attributes:
-        policy_id: A unique identifier for the policy.
-        lob: Type of insurance (auto, home, liability, health).
-        annual_premium: How much the customer pays per year in EUR.
-        tenure_months: How many months this customer has been with us.
-        renewal_count: How many times they've renewed their policy.
-        claim_count_12m: How many claims they've filed in the last year.
-        claim_count_all: Total claims they've ever filed with us.
-        claim_settled_pct: What fraction of their claims have been resolved (0 to 1).
-        days_to_settle_avg: How many days it takes on average to settle their claims.
-        insured_age: How old the insured person is.
-        channel: How they signed up (Direct, Broker, Online, Agent).
-        policy_count_active: How many active policies they currently hold.
-        premium_change_pct: How much their premium changed from last year (in percent).
-        last_contact_days: How many days since we last contacted them, if known.
+        policy_id: Identifiant unique de la police (ex. ``"POL0012345"``).
+        lob: Branche d'assurance — l'une parmi
+            ``{"auto", "home", "liability", "health"}``.
+        annual_premium: Prime annuelle payée par le client, en euros.
+        tenure_months: Ancienneté du contrat, en mois.
+        renewal_count: Nombre de renouvellements déjà effectués.
+        claim_count_12m: Nombre de sinistres déclarés sur les 12 derniers mois.
+        claim_count_all: Nombre total de sinistres déclarés depuis le début.
+        claim_settled_pct: Fraction des sinistres déjà réglés (entre 0 et 1).
+        days_to_settle_avg: Délai moyen de règlement des sinistres en jours.
+        insured_age: Âge de l'assuré principal (entre 18 et 100).
+        channel: Canal d'acquisition — l'un parmi
+            ``{"Direct", "Broker", "Online", "Agent"}``.
+        policy_count_active: Nombre total de polices actives détenues.
+        premium_change_pct: Variation de la prime cette année (en pourcent).
+        last_contact_days: Jours écoulés depuis le dernier contact, ou
+            ``None`` si inconnu.
     """
 
     policy_id: str
-    lob: str = Field(..., description="Line of Business: auto, home, liability, health")
-    annual_premium: float = Field(..., gt=0, description="Annual premium in EUR")
-    tenure_months: int = Field(..., ge=0, description="Policy tenure in months")
+    lob: str = Field(..., description="Branche : auto, home, liability, health")
+    annual_premium: float = Field(..., gt=0, description="Prime annuelle en EUR")
+    tenure_months: int = Field(..., ge=0, description="Ancienneté du contrat en mois")
     renewal_count: int = Field(0, ge=0)
     claim_count_12m: int = Field(0, ge=0)
     claim_count_all: int = Field(0, ge=0)
     claim_settled_pct: float = Field(1.0, ge=0, le=1)
     days_to_settle_avg: float = Field(30.0, ge=0)
     insured_age: int = Field(..., ge=18, le=100)
-    channel: str = Field(..., description="Acquisition channel: Direct, Broker, Online, Agent")
+    channel: str = Field(..., description="Canal d'acquisition : Direct, Broker, Online, Agent")
     policy_count_active: int = Field(1, ge=1)
     premium_change_pct: float = Field(0.0)
     last_contact_days: Optional[int] = None
 
     @field_validator("lob")
     @classmethod
-    def validate_lob(cls, v):
-        """Check that the insurance type is one we support and make it lowercase.
+    def validate_lob(cls, v: str) -> str:
+        """Vérifie la branche et la passe en minuscules.
 
         Args:
-            v: The insurance type value provided by the user.
+            v: Valeur reçue pour le champ ``lob``.
 
         Returns:
-            The insurance type in lowercase.
+            La branche normalisée en minuscules.
 
         Raises:
-            ValueError: If the insurance type isn't one of: auto, home, liability, health.
+            ValueError: Si la valeur ne fait pas partie des branches connues.
         """
         allowed = {"auto", "home", "liability", "health"}
         if v.lower() not in allowed:
-            raise ValueError(f"lob must be one of {allowed}")
+            raise ValueError(f"lob doit etre l'un de {allowed}")
         return v.lower()
 
     @field_validator("channel")
     @classmethod
-    def validate_channel(cls, v):
-        """Check that the sign-up channel is one we recognize.
+    def validate_channel(cls, v: str) -> str:
+        """Vérifie que le canal d'acquisition est connu.
 
         Args:
-            v: The channel value provided by the user.
+            v: Valeur reçue pour le champ ``channel``.
 
         Returns:
-            The channel value, unchanged if valid.
+            La valeur inchangée si elle est valide.
 
         Raises:
-            ValueError: If the channel isn't one of: Direct, Broker, Online, Agent.
+            ValueError: Si la valeur ne fait pas partie des canaux connus.
         """
         allowed = {"Direct", "Broker", "Online", "Agent"}
         if v not in allowed:
-            raise ValueError(f"channel must be one of {allowed}")
+            raise ValueError(f"channel doit etre l'un de {allowed}")
         return v
 
 
 class ChurnPrediction(BaseModel):
-    """The prediction result for a single customer.
+    """Prédiction renvoyée pour un client.
 
     Attributes:
-        policy_id: Which policy was scored.
-        churn_probability: How likely the customer is to leave (0 to 1).
-        risk_tier: A simple category: low, medium, high, or critical.
-        recommended_action: What the retention team should do about this customer.
-        estimated_clv: How much revenue this customer is expected to bring over time, in EUR.
-        model_version: Which version of the model made this prediction.
+        policy_id: Identifiant de la police scorée (recopié de l'entrée).
+        churn_probability: Probabilité de churn entre 0 et 1.
+        risk_tier: Niveau de risque
+            (``"low"``, ``"medium"``, ``"high"``, ``"critical"``).
+        recommended_action: Action recommandée à l'équipe rétention.
+        estimated_clv: Valeur résiduelle estimée du client, en euros.
+        model_version: Version du modèle ayant fait la prédiction.
     """
 
     policy_id: str
@@ -114,22 +130,23 @@ class ChurnPrediction(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    """A request to predict churn for multiple customers at once.
+    """Requête de scoring pour plusieurs clients à la fois.
 
     Attributes:
-        policies: A list of customer records to score.
+        policies: Liste des fiches client à scorer.
     """
 
     policies: list[PolicyFeatures]
 
 
 class BatchResponse(BaseModel):
-    """The results of a batch prediction, with a summary of risk.
+    """Réponse du mode batch avec les prédictions et un résumé du risque.
 
     Attributes:
-        predictions: Individual prediction results for each customer.
-        total_at_risk: How many customers are in the high or critical risk groups.
-        total_premium_at_risk: Total yearly premium from those high-risk customers, in EUR.
+        predictions: Liste des prédictions, dans l'ordre des clients reçus.
+        total_at_risk: Nombre de clients en risque ``high`` ou ``critical``.
+        total_premium_at_risk: Cumul des primes annuelles des clients en
+            risque ``high`` ou ``critical``, en euros.
     """
 
     predictions: list[ChurnPrediction]

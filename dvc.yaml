@@ -1,9 +1,16 @@
-# DVC Pipeline — Insurance Churn ML (MLOps)
-# Versionnage des données + reproducibilité des expériences
-# Commandes : dvc repro | dvc dag | dvc metrics show | dvc params diff
+# DVC pipeline for the Insurance Churn ML project.
+# Each stage is a step you can re-run on its own (`dvc repro <stage>`),
+# and DVC tracks which stages need to be re-executed when their inputs change.
+#
+# Usage:
+#   dvc repro              # rebuild everything that changed
+#   dvc dag                # show the dependency graph
+#   dvc metrics show       # display metrics from the most recent run
+#   dvc params diff        # compare params between runs
 
 stages:
 
+  # ── 1. Download the public source data ────────────────────────────────────
   download_data:
     cmd: python src/data/download_opendata.py
     deps:
@@ -11,74 +18,58 @@ stages:
     outs:
       - data/raw/coil2000/:
           cache: true
+      - data/processed/insurance_churn_train.parquet
+      - data/processed/insurance_churn_test.parquet
     params:
       - params.yaml:
           - data.years
 
-  prepare_features:
-    cmd: python src/features/build_features.py
-    deps:
-      - src/features/build_features.py
-      - src/features/actuarial_features.py
-      - data/raw/coil2000/
-    outs:
-      - data/processed/coil2000_train.parquet
-      - data/processed/coil2000_test.parquet
-    params:
-      - params.yaml:
-          - features.n_top_features
-          - features.random_seed
-
+  # ── 2. Train the model and write metrics ──────────────────────────────────
   train:
     cmd: >-
-      python src/models/train.py
+      python -m src.models.train
       --experiment-name ${model.experiment_name}
-      --data-path data/processed/coil2000_train.parquet
+      --data-path data/processed/insurance_churn_train.parquet
     deps:
       - src/models/train.py
-      - data/processed/coil2000_train.parquet
+      - src/features/actuarial_features.py
+      - src/features/build_features.py
+      - data/processed/insurance_churn_train.parquet
     outs:
-      - models/churn_model.pkl:
+      - models/feature_builder.pkl:
           cache: true
-      - models/feature_names.json
     params:
       - params.yaml:
           - model.experiment_name
           - model.xgb_n_estimators
           - model.xgb_max_depth
           - model.xgb_learning_rate
-          - model.lgbm_n_estimators
           - model.cv_folds
-    metrics:
-      - reports/metrics/train_metrics.json:
-          cache: false
 
+  # ── 3. Evaluate the trained model on the held-out test set ────────────────
   evaluate:
     cmd: >-
-      python src/models/evaluate.py
+      python -m src.models.evaluate
       --min-auc ${model.min_auc_gate}
-      --data-path data/processed/coil2000_test.parquet
+      --data-path data/processed/insurance_churn_test.parquet
     deps:
       - src/models/evaluate.py
-      - models/churn_model.pkl
-      - data/processed/coil2000_test.parquet
+      - models/feature_builder.pkl
+      - data/processed/insurance_churn_test.parquet
     params:
       - params.yaml:
           - model.min_auc_gate
     metrics:
       - reports/metrics/eval_metrics.json:
           cache: false
-    plots:
-      - reports/plots/roc_curve.json
-      - reports/plots/precision_recall.json
-      - reports/plots/shap_summary.png
 
+  # ── 4. Detect data drift between the training and test parquets ───────────
   drift_detection:
     cmd: python src/monitoring/drift_detection.py
     deps:
       - src/monitoring/drift_detection.py
-      - data/processed/coil2000_train.parquet
-      - data/processed/coil2000_test.parquet
+      - data/processed/insurance_churn_train.parquet
+      - data/processed/insurance_churn_test.parquet
     metrics:
       - reports/monitoring/drift_report.json:
           cache: false

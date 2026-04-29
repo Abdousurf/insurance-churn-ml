@@ -1,32 +1,47 @@
-"""Measure how well the churn model performs, using both technical and business-friendly metrics.
+"""Évaluation du modèle : métriques techniques et métiers + visualisations.
 
-Provides ways to check model quality from a business perspective (e.g., "if we
-contact the top 15% riskiest customers, how many actual churners do we catch?")
-and creates charts to visualize the results.
+Une fois le modèle entraîné, deux questions importent :
+
+    * **Est-il juste, statistiquement parlant ?** On le vérifie avec des
+      indicateurs classiques (AUC-ROC, average precision, score de Brier).
+    * **Est-il utile pour le métier ?** On le vérifie avec des indicateurs
+      "actionnables" : si on contacte les 15 % de clients les plus à
+      risque, combien de vrais partants attrape-t-on ?
+
+Ce module fournit les fonctions de calcul, les graphiques (lift, ROC,
+calibration) et un *rapport complet* qui agrège l'ensemble. Il expose
+aussi une CLI utilisée par le pipeline DVC pour publier un fichier de
+métriques JSON et appliquer une "porte de qualité" : si l'AUC tombe
+sous un seuil, le job CI échoue et le déploiement est bloqué.
 """
 
 # ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file measures how good the churn prediction model
-# is. It calculates scores that tell us things like:
-# - How well the model ranks customers by churn risk
-# - If we focus on the riskiest customers, how many real
-#   churners do we actually catch?
-# - Are the model's probability estimates trustworthy?
-# It also creates charts to visualize these results.
+# RÔLE DE CE FICHIER (en clair) :
+# Il calcule "à quel point le modèle est bon" sous deux angles :
+#   - une note technique (AUC-ROC, etc.) qui dit s'il classe
+#     bien les clients,
+#   - une note métier ("si on contacte les 15 % les plus à
+#     risque, on attrape X % des vrais partants") qui parle
+#     aux équipes commerciales.
+# Il produit aussi des graphiques pour expliquer visuellement
+# la performance.
 # ───────────────────────────────────────────────────────
 
-import numpy as np
+from __future__ import annotations
+
 import matplotlib
-matplotlib.use("Agg")
+
+matplotlib.use("Agg")  # mode "headless" — n'ouvre pas de fenêtre graphique
+
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
-    roc_auc_score,
     average_precision_score,
     brier_score_loss,
+    roc_auc_score,
     roc_curve,
 )
-from sklearn.calibration import calibration_curve
 
 
 def compute_business_metrics(
@@ -34,38 +49,35 @@ def compute_business_metrics(
     y_prob: np.ndarray,
     top_k: float = 0.15,
 ) -> dict:
-    """Calculate business-friendly performance metrics for a given target group.
+    """Calcule les métriques actionnables pour un seuil de ciblage donné.
 
-    Answers the question: "If we focus our retention efforts on the top X%
-    riskiest customers, how effective would that be?"
+    Question concrète : "si on contacte uniquement les ``top_k * 100`` %
+    de clients que le modèle classe comme les plus à risque, quel est le
+    rapport coût/efficacité ?"
 
     Args:
-        y_true: The actual outcomes — did each customer really leave? (0 or 1)
-        y_prob: The model's predicted chance of each customer leaving (0 to 1).
-        top_k: What fraction of customers to target (e.g., 0.15 means top 15%).
+        y_true: Vraie issue pour chaque client (0 = resté, 1 = parti).
+        y_prob: Probabilité de churn prédite par le modèle (entre 0 et 1).
+        top_k: Fraction du portefeuille à cibler (par défaut 0.15 = 15 %).
 
     Returns:
-        A dictionary with: how precise our targeting is, what fraction of
-        churners we'd catch, how much better than random this is (lift),
-        and raw counts.
+        Dictionnaire contenant :
+            ``precision`` (proportion de vrais partants dans la cible),
+            ``recall``    (proportion de tous les partants attrapés),
+            ``lift``      (combien de fois mieux que tirer au hasard),
+            ``top_k``, ``churners_captured``, ``total_churners``.
     """
     n = len(y_true)
-    # Figure out how many customers fall in the "top k%" group
     k = int(n * top_k)
 
-    # Sort customers from highest predicted risk to lowest
     sorted_idx = np.argsort(y_prob)[::-1]
     y_sorted = np.asarray(y_true)[sorted_idx]
 
-    # Count how many actual churners are in our target group
     churners_in_top_k = y_sorted[:k].sum()
     total_churners = np.asarray(y_true).sum()
 
-    # What percentage of our target group are actual churners?
     precision_at_k = churners_in_top_k / k if k > 0 else 0.0
-    # What percentage of all churners did we catch?
     recall_at_k = churners_in_top_k / total_churners if total_churners > 0 else 0.0
-    # How much better is this than picking customers at random?
     base_rate = total_churners / n if n > 0 else 0.0
     lift = precision_at_k / base_rate if base_rate > 0 else 0.0
 
@@ -80,38 +92,36 @@ def compute_business_metrics(
 
 
 def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
-    """Create a chart showing how much better the model is than random guessing.
+    """Dessine la courbe de lift (gains cumulés vs ciblage aléatoire).
 
-    The lift curve shows: as we contact more and more customers (starting
-    from the riskiest), what percentage of all churners have we found?
-    A good model finds most churners quickly; random guessing follows a
-    straight diagonal line.
+    Lecture : on trie les clients du plus à risque au moins à risque selon
+    le modèle, puis on regarde, en avançant dans la liste, la part de
+    vrais partants déjà rencontrés. Un bon modèle "remonte vite" la
+    diagonale d'un tirage aléatoire.
 
     Args:
-        y_true: The actual outcomes — did each customer really leave? (0 or 1)
-        y_prob: The model's predicted chance of each customer leaving (0 to 1).
+        y_true: Vraie issue pour chaque client (0/1).
+        y_prob: Probabilité de churn prédite (0 à 1).
 
     Returns:
-        A chart (matplotlib Figure) showing the lift curve.
+        La figure matplotlib avec la courbe modèle et la diagonale
+        "tirage aléatoire".
     """
     n = len(y_true)
-    # Sort customers from highest predicted risk to lowest
     sorted_idx = np.argsort(y_prob)[::-1]
     y_sorted = np.asarray(y_true)[sorted_idx]
 
-    # Calculate running totals as we go down the list
     percentiles = np.arange(1, n + 1) / n
     cumulative_churners = np.cumsum(y_sorted)
     total_churners = y_sorted.sum()
     cumulative_recall = cumulative_churners / total_churners
 
-    # Draw the chart
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(percentiles * 100, cumulative_recall * 100, label="Model", linewidth=2)
-    ax.plot([0, 100], [0, 100], "--", color="gray", label="Random")
-    ax.set_xlabel("% Population Targeted")
-    ax.set_ylabel("% Churners Captured")
-    ax.set_title("Lift Curve — Cumulative Gains")
+    ax.plot(percentiles * 100, cumulative_recall * 100, label="Modèle", linewidth=2)
+    ax.plot([0, 100], [0, 100], "--", color="gray", label="Tirage aléatoire")
+    ax.set_xlabel("% de la population ciblée")
+    ax.set_ylabel("% de churners capturés")
+    ax.set_title("Courbe de lift — gains cumulés")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -119,31 +129,30 @@ def plot_lift_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> plt.Figure:
-    """Create a chart showing whether the model's probability estimates are accurate.
+    """Dessine la courbe de calibration (probabilités prédites vs réelles).
 
-    If the model says "30% chance of churning" for a group of customers,
-    do roughly 30% of them actually churn? This chart checks that.
+    Question : quand le modèle dit "30 % de chance de partir", est-ce que
+    30 % des clients de ce groupe partent vraiment ? Si la courbe colle à
+    la diagonale, oui ; sinon, le modèle est mal calibré.
 
     Args:
-        y_true: The actual outcomes — did each customer really leave? (0 or 1)
-        y_prob: The model's predicted chance of each customer leaving (0 to 1).
-        n_bins: How many groups to split the predictions into for comparison.
+        y_true: Vraie issue pour chaque client (0/1).
+        y_prob: Probabilité de churn prédite (0 à 1).
+        n_bins: Nombre de tranches de probabilité à comparer.
 
     Returns:
-        A chart (matplotlib Figure) showing predicted vs. actual probabilities.
+        La figure matplotlib avec la courbe et la diagonale parfaite.
     """
-    # Split predictions into groups and compare predicted vs. actual rates
     fraction_of_positives, mean_predicted_value = calibration_curve(
         y_true, y_prob, n_bins=n_bins, strategy="uniform"
     )
 
-    # Draw the chart — a perfect model follows the diagonal line
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Model")
-    ax.plot([0, 1], [0, 1], "--", color="gray", label="Perfectly calibrated")
-    ax.set_xlabel("Mean Predicted Probability")
-    ax.set_ylabel("Fraction of Positives")
-    ax.set_title("Calibration Plot")
+    ax.plot(mean_predicted_value, fraction_of_positives, "s-", label="Modèle")
+    ax.plot([0, 1], [0, 1], "--", color="gray", label="Calibration parfaite")
+    ax.set_xlabel("Probabilité prédite (moyenne)")
+    ax.set_ylabel("Fraction de positifs réels")
+    ax.set_title("Courbe de calibration")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -151,29 +160,29 @@ def plot_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -
 
 
 def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
-    """Create a chart showing the model's ability to tell churners from non-churners.
+    """Dessine la courbe ROC (taux de vrais positifs vs faux positifs).
 
-    The ROC curve shows the trade-off between catching more churners (good)
-    and falsely flagging non-churners (bad). The area under the curve (AUC)
-    gives a single score — closer to 1.0 is better, 0.5 is random guessing.
+    L'aire sous cette courbe (AUC) résume la capacité du modèle à
+    distinguer les partants des non-partants : 1.0 = parfait, 0.5 =
+    aléatoire. Au-dessus de 0.80, on parle d'un bon modèle pour ce type
+    de problème déséquilibré.
 
     Args:
-        y_true: The actual outcomes — did each customer really leave? (0 or 1)
-        y_prob: The model's predicted chance of each customer leaving (0 to 1).
+        y_true: Vraie issue pour chaque client (0/1).
+        y_prob: Probabilité de churn prédite (0 à 1).
 
     Returns:
-        A chart (matplotlib Figure) with the ROC curve and its AUC score.
+        La figure matplotlib avec la courbe et l'AUC en légende.
     """
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     auc = roc_auc_score(y_true, y_prob)
 
-    # Draw the chart
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(fpr, tpr, linewidth=2, label=f"AUC = {auc:.3f}")
     ax.plot([0, 1], [0, 1], "--", color="gray")
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title("ROC Curve")
+    ax.set_xlabel("Taux de faux positifs")
+    ax.set_ylabel("Taux de vrais positifs")
+    ax.set_title("Courbe ROC")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -181,15 +190,15 @@ def plot_roc_curve(y_true: np.ndarray, y_prob: np.ndarray) -> plt.Figure:
 
 
 def full_evaluation_report(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
-    """Create a complete quality report with all key metrics in one place.
+    """Génère un rapport agrégé avec toutes les métriques techniques et métiers.
 
     Args:
-        y_true: The actual outcomes — did each customer really leave? (0 or 1)
-        y_prob: The model's predicted chance of each customer leaving (0 to 1).
+        y_true: Vraie issue pour chaque client (0/1).
+        y_prob: Probabilité de churn prédite (0 à 1).
 
     Returns:
-        A dictionary with the overall quality score (AUC), precision score,
-        calibration score, and business metrics at the 10% and 15% targeting levels.
+        Dictionnaire avec ``auc_roc``, ``avg_precision``, ``brier_score``
+        et les métriques métier aux seuils de ciblage 10 % et 15 %.
     """
     return {
         "auc_roc": round(roc_auc_score(y_true, y_prob), 4),
@@ -198,3 +207,73 @@ def full_evaluation_report(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
         "business_metrics_10pct": compute_business_metrics(y_true, y_prob, top_k=0.10),
         "business_metrics_15pct": compute_business_metrics(y_true, y_prob, top_k=0.15),
     }
+
+
+def _cli_evaluate(args) -> int:
+    """Évalue le modèle Production sur un parquet de test et écrit le rapport.
+
+    Cette fonction sert d'entrée à l'étape ``evaluate`` du pipeline DVC.
+    Elle charge le modèle Production depuis MLflow, lui présente le jeu
+    de test transformé par le builder de features sauvegardé, puis écrit
+    les métriques au format JSON pour DVC et la CI. Renvoie 1 (échec) si
+    l'AUC tombe sous le seuil ``--min-auc`` afin de bloquer un mauvais
+    déploiement.
+
+    Args:
+        args: Arguments parsés depuis la ligne de commande.
+
+    Returns:
+        ``0`` si l'AUC dépasse ``--min-auc``, ``1`` sinon.
+    """
+    import json
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.features.build_features import NON_FEATURE_COLS
+    from src.models.predict import load_feature_builder, load_production_model
+
+    df = pd.read_parquet(args.data_path)
+    y_true = df["churn_label"].to_numpy()
+
+    model = load_production_model()
+    builder = load_feature_builder()
+    df_features = builder.transform(df.drop(columns=["churn_label"]))
+    feature_cols = [c for c in df_features.columns if c not in NON_FEATURE_COLS]
+    y_prob = model.predict_proba(df_features[feature_cols])[:, 1]
+
+    report = full_evaluation_report(y_true, y_prob)
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2))
+    print(f"Rapport d'evaluation -> {output_path}")
+    print(f"AUC-ROC : {report['auc_roc']:.4f} (seuil : {args.min_auc})")
+
+    return 0 if report["auc_roc"] >= args.min_auc else 1
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Evalue le modele Production sur un parquet de test."
+    )
+    parser.add_argument(
+        "--data-path",
+        required=True,
+        help="Parquet de test contenant la colonne `churn_label`",
+    )
+    parser.add_argument(
+        "--min-auc",
+        type=float,
+        default=0.70,
+        help="Seuil de qualite (AUC) en deca duquel la CI echoue (defaut : %(default)s)",
+    )
+    parser.add_argument(
+        "--output",
+        default="reports/metrics/eval_metrics.json",
+        help="Chemin du rapport JSON a ecrire (defaut : %(default)s)",
+    )
+    sys.exit(_cli_evaluate(parser.parse_args()))

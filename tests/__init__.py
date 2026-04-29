@@ -1,8 +1,6 @@
-"""Test suite for the insurance churn prediction project."""
+"""Suite de tests pytest du projet de prédiction de churn assurance.
 
-# ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file marks the "tests" folder as a Python package
-# so the test runner can find and run all tests inside it.
-# It doesn't contain any logic itself.
-# ───────────────────────────────────────────────────────
+Ce dossier marque "tests" comme un package Python pour que pytest
+détecte automatiquement tous les fichiers ``test_*.py`` qu'il contient.
+Il ne définit aucun code applicatif.
+"""

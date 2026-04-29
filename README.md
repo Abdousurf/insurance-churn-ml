@@ -128,18 +128,31 @@ git clone https://github.com/Abdousurf/insurance-churn-ml
 cd insurance-churn-ml
 pip install -r requirements.txt
 
-# Train model (logs to MLflow)
-python src/models/train.py --experiment-name churn_v1
+# 1. Start an MLflow tracking server (used by training and the API)
+make mlflow                                    # http://127.0.0.1:5000
 
-# Start MLflow UI
-mlflow ui --port 5000
+# 2. Download the public dataset and translate it to the project schema
+make data                                      # writes data/processed/*.parquet
 
-# Launch prediction API
-uvicorn src.api.main:app --reload
+# 3. Train the model (logs to MLflow, registers it as `insurance_churn_xgb`)
+make train
+
+# 4. Promote the trained version to the "Production" stage
+python -c "import mlflow; \
+  mlflow.set_tracking_uri('http://127.0.0.1:5000'); \
+  mlflow.MlflowClient().transition_model_version_stage( \
+    name='insurance_churn_xgb', version=1, stage='Production')"
+
+# 5. Launch the prediction API
+make api                                       # http://127.0.0.1:8000
 
 # Or with Docker
 docker-compose up
 ```
+
+All MLflow / model paths are configurable via environment variables
+(`MLFLOW_TRACKING_URI`, `MODEL_NAME`, `MODEL_STAGE`,
+`FEATURE_BUILDER_PATH`) — sane defaults are used when they're unset.
 
 ## API Usage
 

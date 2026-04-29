@@ -1,42 +1,72 @@
-"""Make churn predictions on new insurance policies using the trained model.
+"""Inférence en lot : score un fichier complet de clients avec le modèle.
 
-Loads the saved model and scores individual policies or entire files,
-assigning each customer a risk level (low, medium, high, critical).
+Ce module sert principalement aux usages "batch" (campagnes CRM
+nocturnes, exports planifiés) où l'on veut scorer plusieurs milliers de
+clients d'un coup et écrire les résultats dans un fichier parquet.
+
+Pour l'inférence en temps réel, voir le service FastAPI dans
+:mod:`src.api`.
+
+Le modèle est chargé depuis le **registre MLflow** (étape ``Production``)
+et le builder de features est chargé depuis le disque (fichier
+sauvegardé pendant l'entraînement). Cela garantit que les
+transformations appliquées en inférence sont **strictement identiques**
+à celles vues à l'entraînement.
 """
 
 # ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file uses the trained model to predict which
-# customers are likely to leave. It can:
-# - Load the saved production model
-# - Score one batch of customer data at a time
-# - Assign each customer a risk level (low/medium/high/critical)
-# - Save the results to a file
+# RÔLE DE CE FICHIER (en clair) :
+# C'est l'outil "scorez-moi tout le portefeuille". On lui
+# donne un fichier de clients, il sort un fichier avec, pour
+# chaque client : sa probabilité de partir (0 à 100 %) et un
+# niveau de risque (low / medium / high / critical).
 # ───────────────────────────────────────────────────────
 
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+
+import joblib
 import mlflow
 import pandas as pd
-from pathlib import Path
 
 from src.features.actuarial_features import ActuarialFeatureBuilder
 from src.features.build_features import NON_FEATURE_COLS
 
-
-# Where to find MLflow and which model to load
-MLFLOW_TRACKING_URI = "http://localhost:5000"
-MODEL_NAME = "insurance_churn_xgb"
-MODEL_STAGE = "Production"
+# Configuration via variables d'environnement pour qu'un même code tourne
+# en local et en CI sans modification.
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+MODEL_NAME = os.getenv("MODEL_NAME", "insurance_churn_xgb")
+MODEL_STAGE = os.getenv("MODEL_STAGE", "Production")
+FEATURE_BUILDER_PATH = Path(os.getenv("FEATURE_BUILDER_PATH", "models/feature_builder.pkl"))
 
 
 def load_production_model():
-    """Load the live production model that's been saved in MLflow.
+    """Charge le modèle Production depuis le registre MLflow.
 
     Returns:
-        The trained model, ready to make predictions.
+        Le modèle entraîné, prêt à appeler ``predict_proba``.
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
-    return model
+    return mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
+
+
+def load_feature_builder() -> ActuarialFeatureBuilder:
+    """Charge le builder de features sauvegardé pendant l'entraînement.
+
+    Si le fichier n'existe pas (ex. on lance l'inférence avant d'avoir
+    entraîné le modèle), on retombe sur un builder neuf, non entraîné.
+    L'inférence reste possible mais la feature "prime vs marché" sera
+    dégradée — un signal clair qu'il manque une étape.
+
+    Returns:
+        Un :class:`ActuarialFeatureBuilder`, idéalement déjà entraîné.
+    """
+    if FEATURE_BUILDER_PATH.exists():
+        return joblib.load(FEATURE_BUILDER_PATH)
+    return ActuarialFeatureBuilder()
 
 
 def predict_dataframe(
@@ -44,35 +74,36 @@ def predict_dataframe(
     model,
     builder: ActuarialFeatureBuilder,
 ) -> pd.DataFrame:
-    """Predict churn risk for a table of customers and assign risk levels.
-
-    Each customer gets a probability (0-100% chance of leaving) and a
-    risk category: low, medium, high, or critical.
+    """Score un tableau de clients et leur attribue un niveau de risque.
 
     Args:
-        df: Raw policy data for the customers to score.
-        model: The trained prediction model.
-        builder: A feature builder that's already been set up on training data.
+        df: Tableau de clients au format standard du projet (colonnes
+            ``policy_id``, ``lob``, ``annual_premium``, …).
+        model: Modèle entraîné (typiquement chargé via
+            :func:`load_production_model`).
+        builder: Builder de features cohérent avec l'entraînement.
 
     Returns:
-        A table with each customer's policy ID (if available), their predicted
-        churn probability, and their risk level.
+        DataFrame de résultats avec trois colonnes : ``policy_id`` (si
+        présent dans l'entrée), ``churn_probability`` et ``risk_tier``.
     """
-    # Turn raw data into the features the model expects
     df_features = builder.transform(df)
     feature_cols = [c for c in df_features.columns if c not in NON_FEATURE_COLS]
     X = df_features[feature_cols]
 
-    # Get the model's predicted probability of churn for each customer
-    probas = model.predict_proba(X)[:, 1]
+    probabilities = model.predict_proba(X)[:, 1]
 
-    # Build the results table with risk tiers
-    result = df[["policy_id"]].copy() if "policy_id" in df.columns else pd.DataFrame()
-    result["churn_probability"] = probas
-    # Assign a risk level based on the probability
+    # On garde l'identifiant du client si on l'a, sinon on conserve juste
+    # l'index d'origine pour pouvoir rapprocher les lignes.
+    result = (
+        df[["policy_id"]].copy()
+        if "policy_id" in df.columns
+        else pd.DataFrame(index=df.index)
+    )
+    result["churn_probability"] = probabilities
     result["risk_tier"] = pd.cut(
-        probas,
-        bins=[0, 0.2, 0.45, 0.70, 1.0],
+        probabilities,
+        bins=[0, 0.20, 0.45, 0.70, 1.0],
         labels=["low", "medium", "high", "critical"],
         include_lowest=True,
     )
@@ -84,44 +115,45 @@ def batch_score(
     output_path: Path,
     model=None,
     builder: ActuarialFeatureBuilder | None = None,
-):
-    """Score an entire file of policies and save the results.
-
-    Reads a file of customer data, predicts churn risk for each one,
-    and writes the results to a new file.
+) -> pd.DataFrame:
+    """Lit un parquet de clients, les score tous, écrit le résultat sur disque.
 
     Args:
-        input_path: Where the customer data file is located.
-        output_path: Where to save the scored results.
-        model: The trained model. If not provided, loads the production model automatically.
-        builder: The feature builder. If not provided, creates a new one from the data.
+        input_path: Chemin du fichier parquet contenant les clients à scorer.
+        output_path: Chemin où sauvegarder les prédictions.
+        model: Modèle déjà chargé. S'il est ``None``, on charge le modèle
+            Production via :func:`load_production_model`.
+        builder: Builder déjà chargé. S'il est ``None``, on charge celui
+            du disque via :func:`load_feature_builder`.
 
     Returns:
-        A table with the scoring results for all customers.
+        Le même DataFrame de résultats que celui écrit sur disque.
     """
-    # Load the model if one wasn't provided
     if model is None:
         model = load_production_model()
-    # Create a feature builder if one wasn't provided
     if builder is None:
-        builder = ActuarialFeatureBuilder()
+        builder = load_feature_builder()
 
-    # Read the data, build features, make predictions, and save
     df = pd.read_parquet(input_path)
-    builder.fit(df)
     results = predict_dataframe(df, model, builder)
     results.to_parquet(output_path, index=False)
-    print(f"Scored {len(results)} policies → {output_path}")
+    print(f"{len(results)} clients scores -> {output_path}")
     return results
 
 
-# This section runs only when you execute this file directly from the command line
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Batch scoring")
-    parser.add_argument("--input", required=True, help="Path to input parquet")
-    parser.add_argument("--output", default="data/scores.parquet")
+    parser = argparse.ArgumentParser(
+        description="Scoring batch des assures avec le modele de churn."
+    )
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Parquet d'entree contenant les clients a scorer",
+    )
+    parser.add_argument(
+        "--output",
+        default="data/scores.parquet",
+        help="Parquet de sortie pour les predictions (defaut : %(default)s)",
+    )
     args = parser.parse_args()
-
     batch_score(Path(args.input), Path(args.output))

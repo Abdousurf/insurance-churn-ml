@@ -1,63 +1,88 @@
-"""Create insurance-specific data columns that help predict customer churn.
+"""Création d'indicateurs métier "actuariels" pour la prédiction de churn.
 
-These features are based on how insurance companies price policies and what
-research shows about why customers leave. The main idea: customers who are
-paying too much compared to the market, or who had bad claims experiences,
-are the most likely to leave.
+Le modèle ne peut pas apprendre directement à partir de la prime, de
+l'âge ou du nombre de sinistres pris isolément : il a besoin d'indicateurs
+plus parlants. Ce module en construit toute une famille, inspirée des
+pratiques de tarification en assurance :
+
+    * **Prix vs marché** — un client qui paie plus cher que la médiane de
+      sa branche a une probabilité plus élevée de partir (il fait jouer la
+      concurrence).
+    * **Sinistralité** — un client qui a eu plusieurs sinistres récents,
+      ou qui a attendu longtemps son indemnisation, est insatisfait.
+    * **Fidélité** — l'ancienneté et le nombre de renouvellements protègent
+      du churn ; à l'inverse, un client jamais renouvelé est très fragile.
+    * **Multi-équipement** — un client qui détient plusieurs contrats chez
+      nous est "verrouillé" par les remises de package.
+    * **Cycle de vie** — l'âge et le canal d'acquisition expliquent une
+      large part du comportement (les jeunes en ligne comparent davantage).
+
+Ces indicateurs sont produits par la classe :class:`ActuarialFeatureBuilder`,
+qui suit l'interface scikit-learn : ``fit`` apprend les paramètres (prix
+médians par branche), ``transform`` ajoute les colonnes au DataFrame.
 """
 
 # ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file takes raw insurance policy data and creates
-# new calculated columns (features) that capture important
-# patterns — like whether a customer is overpaying, how
-# often they file claims, how long they've been a customer,
-# and other signals that help predict if they'll leave.
+# RÔLE DE CE FICHIER (en clair) :
+# Il prend un tableau de clients tel qu'on le récupère du
+# CRM (prime, âge, ancienneté, nombre de sinistres…) et y
+# rajoute des colonnes calculées plus utiles : "ce client
+# paie-t-il trop cher ?", "est-il nouveau ?", "a-t-il eu un
+# sinistre récemment ?". Le modèle apprend sur ces colonnes
+# enrichies plutôt que sur les colonnes brutes, ce qui
+# améliore nettement sa précision.
 # ───────────────────────────────────────────────────────
 
-import pandas as pd
-import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
 from typing import Optional
+
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 
 
 class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
-    """A tool that creates insurance-specific data columns for churn prediction.
+    """Pipeline scikit-learn qui crée les indicateurs métier d'assurance.
 
-    It looks at things like pricing, claims history, customer loyalty,
-    how many policies someone holds, and their age/channel to build
-    useful signals for the model.
+    Cette classe respecte l'interface standard de scikit-learn (``fit`` /
+    ``transform`` / ``fit_transform``). Elle peut donc s'intégrer
+    naturellement dans un :class:`sklearn.pipeline.Pipeline` ou être
+    sérialisée avec joblib pour être rejouée à l'identique en production.
 
     Attributes:
-        market_rate_col: Optional name of a column with external market prices.
-        market_avg_premiums_: A lookup of typical premiums for each type of insurance,
-            learned from the data.
+        market_rate_col: Nom optionnel d'une colonne contenant les prix de
+            marché externes. Si ``None``, les prix de marché sont estimés
+            depuis les données elles-mêmes (médiane par branche).
+        market_avg_premiums_: Dictionnaire ``{branche: prix médian}``
+            appris à partir des données d'entraînement. Renseigné après
+            l'appel à :meth:`fit`.
     """
 
     def __init__(self, market_rate_col: Optional[str] = None):
-        """Set up the feature builder.
+        """Initialise le builder.
 
         Args:
-            market_rate_col: Optional column name with external market price data.
-                If not provided, market prices are estimated from the data itself.
+            market_rate_col: Nom d'une colonne externe contenant des prix
+                de marché. Si ``None``, le builder déduira les prix de
+                référence depuis les données d'entraînement.
         """
         self.market_rate_col = market_rate_col
-        self.market_avg_premiums_ = {}
+        self.market_avg_premiums_: dict[str, float] = {}
 
-    def fit(self, X: pd.DataFrame, y=None):
-        """Learn the typical (median) premium for each type of insurance.
+    def fit(self, X: pd.DataFrame, y=None) -> "ActuarialFeatureBuilder":
+        """Apprend la prime médiane par branche d'assurance.
 
-        This lets us later compare each customer's premium to the market
-        average and see if they're overpaying.
+        Cette information sera ensuite utilisée par :meth:`transform` pour
+        comparer la prime de chaque client à la médiane de sa branche et
+        détecter les contrats potentiellement surfacturés.
 
         Args:
-            X: Table of policy data to learn from.
-            y: Not used. Only here so this works with standard machine learning tools.
+            X: Table des polices d'assurance utilisée pour apprendre.
+            y: Ignoré. Présent uniquement pour la compatibilité avec
+                l'API scikit-learn.
 
         Returns:
-            self
+            ``self``, pour permettre le chaînage d'appels.
         """
-        # Calculate the middle-of-the-road premium for each insurance type
         if "lob" in X.columns and "annual_premium" in X.columns:
             self.market_avg_premiums_ = (
                 X.groupby("lob")["annual_premium"].median().to_dict()
@@ -65,220 +90,204 @@ class ActuarialFeatureBuilder(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Add all the calculated insurance columns to the data.
+        """Ajoute toutes les colonnes calculées au DataFrame fourni.
 
         Args:
-            X: Table of policy data to add features to.
+            X: Table des polices d'assurance à enrichir.
 
         Returns:
-            The same table but with new calculated columns added.
+            Une copie du DataFrame d'entrée avec les colonnes
+            supplémentaires (prix vs marché, sinistralité, fidélité, etc.).
         """
         df = X.copy()
-
-        # Add each group of features one at a time
         df = self._premium_features(df)
         df = self._claims_features(df)
         df = self._loyalty_features(df)
         df = self._portfolio_features(df)
         df = self._lifecycle_features(df)
-
         return df
 
     def _premium_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create columns related to pricing — are customers paying a fair price?
+        """Ajoute les colonnes liées à la tarification.
+
+        Crée notamment ``premium_to_market_ratio`` (prime / médiane de
+        branche), ``is_overpriced`` (drapeau si > 120 % du marché) et
+        ``log_premium`` (échelle logarithmique pour atténuer les outliers).
 
         Args:
-            df: Table of policy data.
+            df: Table des polices.
 
         Returns:
-            The same table with pricing-related columns added.
+            Le DataFrame d'entrée enrichi des indicateurs de tarification.
         """
-
         if "annual_premium" in df.columns and "lob" in df.columns:
-            # How does each customer's price compare to the typical market price?
+            # Combien ce client paie-t-il par rapport au prix médian de sa branche ?
             df["premium_to_market_ratio"] = df.apply(
-                lambda r: r["annual_premium"] / self.market_avg_premiums_.get(r["lob"], r["annual_premium"]),
-                axis=1
+                lambda r: r["annual_premium"]
+                / self.market_avg_premiums_.get(r["lob"], r["annual_premium"]),
+                axis=1,
             )
-            # Flag customers paying more than 20% above market rate
+            # Drapeau "client surfacturé" : il paie plus de 20 % au-dessus du marché.
             df["is_overpriced"] = (df["premium_to_market_ratio"] > 1.20).astype(int)
-
-            # Shrink very large premium values so they don't dominate the model
+            # On compresse les très gros montants (échelle logarithmique).
             df["log_premium"] = np.log1p(df["annual_premium"])
 
         if "premium_change_pct" in df.columns:
-            # Did their premium go up this year?
             df["premium_increased"] = (df["premium_change_pct"] > 0).astype(int)
-            # Did it go up by more than 5%? (big increases push people to leave)
+            # Une hausse de plus de 5 % est un déclencheur fort de churn.
             df["premium_increase_gt5pct"] = (df["premium_change_pct"] > 5).astype(int)
 
         return df
 
     def _claims_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create columns about claims history — a rough measure of customer satisfaction.
+        """Ajoute les colonnes liées à l'historique de sinistres.
 
-        Customers who filed claims recently, had multiple claims, or waited
-        a long time for settlement are more likely to be unhappy and leave.
+        Un client mécontent de sa gestion sinistre (sinistre récent,
+        sinistre non encore réglé, délai de règlement > 45 jours) est
+        beaucoup plus susceptible de partir.
 
         Args:
-            df: Table of policy data.
+            df: Table des polices.
 
         Returns:
-            The same table with claims-related columns added.
+            Le DataFrame d'entrée enrichi des indicateurs de sinistralité.
         """
-
         if "claim_count_12m" in df.columns:
-            # Did they file any claims in the last year?
             df["has_recent_claim"] = (df["claim_count_12m"] > 0).astype(int)
-            # Did they file more than one claim recently?
             df["multi_claim"] = (df["claim_count_12m"] > 1).astype(int)
 
         if "claim_count_all" in df.columns and "tenure_months" in df.columns:
-            # On average, how many claims do they file per year?
-            df["claims_per_year"] = df["claim_count_all"] / (df["tenure_months"] / 12).clip(lower=0.1)
+            # Fréquence annualisée moyenne sur l'ancienneté complète.
+            df["claims_per_year"] = (
+                df["claim_count_all"] / (df["tenure_months"] / 12).clip(lower=0.1)
+            )
 
         if "claim_settled_pct" in df.columns:
-            # Do they have any unresolved claims? (this frustrates customers)
+            # Drapeau "sinistre encore en cours" — source de mécontentement.
             df["has_unsettled_claim"] = (df["claim_settled_pct"] < 1.0).astype(int)
 
         if "days_to_settle_avg" in df.columns:
-            # Were their claims slow to process? (over 45 days is considered slow)
             df["slow_settlement"] = (df["days_to_settle_avg"] > 45).astype(int)
 
         return df
 
     def _loyalty_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create columns about how long and loyal a customer has been.
-
-        New customers and those who haven't been contacted recently are
-        at higher risk of leaving.
+        """Ajoute les colonnes liées à l'ancienneté et à la fidélité.
 
         Args:
-            df: Table of policy data.
+            df: Table des polices.
 
         Returns:
-            The same table with loyalty-related columns added.
+            Le DataFrame d'entrée enrichi des indicateurs de fidélité
+            (``tenure_years``, ``is_new_customer``, ``is_loyal_customer``,
+            etc.).
         """
-
         if "tenure_months" in df.columns:
-            # Convert months to years for easier reading
             df["tenure_years"] = df["tenure_months"] / 12
-            # Shrink very long tenures so they don't dominate
             df["log_tenure"] = np.log1p(df["tenure_months"])
-
-            # Brand new customers (less than 1 year) — high churn risk
+            # Nouveau client (< 1 an) : risque de churn élevé.
             df["is_new_customer"] = (df["tenure_months"] < 12).astype(int)
-            # Long-term customers (5+ years) — usually very loyal
+            # Client fidèle (≥ 5 ans) : risque de churn faible.
             df["is_loyal_customer"] = (df["tenure_months"] >= 60).astype(int)
 
         if "renewal_count" in df.columns:
-            # Never renewed = first-year customer, higher risk
             df["never_renewed"] = (df["renewal_count"] == 0).astype(int)
-            # Shrink large renewal counts
             df["log_renewals"] = np.log1p(df["renewal_count"])
 
         if "last_contact_days" in df.columns:
-            # Haven't heard from us in over 6 months — might feel forgotten
+            # Plus de 6 mois sans contact : le client peut se sentir oublié.
             df["long_since_contact"] = (df["last_contact_days"] > 180).astype(int)
 
         return df
 
     def _portfolio_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create columns about whether customers hold multiple policies.
-
-        Customers with several policies (e.g., auto + home) are much less
-        likely to leave — they're more "locked in" and often get bundle discounts.
+        """Ajoute les colonnes liées au multi-équipement (plusieurs contrats).
 
         Args:
-            df: Table of policy data.
+            df: Table des polices.
 
         Returns:
-            The same table with multi-policy columns added.
+            Le DataFrame d'entrée enrichi des indicateurs de portefeuille.
         """
-
         if "policy_count_active" in df.columns:
-            # Does this customer have more than one policy with us?
             df["is_multi_line"] = (df["policy_count_active"] > 1).astype(int)
-            # Customers with 2+ policies could qualify for a bundle discount
+            # Éligibilité aux remises de package (auto + habitation, etc.).
             df["multi_line_discount_eligible"] = (df["policy_count_active"] >= 2).astype(int)
 
         return df
 
     def _lifecycle_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create columns about the customer's age group and how they signed up.
-
-        Younger customers and those who signed up online tend to shop around
-        more and are more sensitive to price.
+        """Ajoute les colonnes liées à l'âge et au canal d'acquisition.
 
         Args:
-            df: Table of policy data.
+            df: Table des polices.
 
         Returns:
-            The same table with age and channel columns added.
+            Le DataFrame d'entrée enrichi des indicateurs de cycle de vie.
         """
-
         if "insured_age" in df.columns:
-            # Group ages into brackets that match insurance pricing tiers
+            # Découpage en classes d'âge calquées sur les grilles tarifaires.
             df["age_segment_encoded"] = pd.cut(
                 df["insured_age"],
                 bins=[0, 25, 35, 50, 65, 100],
-                labels=[0, 1, 2, 3, 4]
+                labels=[0, 1, 2, 3, 4],
             ).astype(int)
-
-            # Young adults (18-30) are the most price-sensitive age group
+            # Les 18–30 ans sont le segment le plus sensible au prix.
             df["is_young_adult"] = (df["insured_age"].between(18, 30)).astype(int)
 
         if "channel" in df.columns:
-            # Online customers tend to compare prices more and switch more easily
             df["is_online_customer"] = (df["channel"] == "Online").astype(int)
-            # Broker customers often have a personal relationship keeping them loyal
             df["is_broker_customer"] = (df["channel"] == "Broker").astype(int)
 
         return df
 
 
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """Create the complete set of features ready for model training.
+    """Raccourci : crée la matrice de features prête pour l'entraînement.
 
-    Takes raw policy data, adds all the insurance-specific calculated columns,
-    then removes any columns the model shouldn't see (like IDs, text fields,
-    and the answer column).
+    Cette fonction enchaîne ``ActuarialFeatureBuilder.fit_transform`` puis
+    retire les colonnes que le modèle ne doit pas voir (identifiants,
+    libellés textuels et la cible elle-même).
 
     Args:
-        df: Raw policy data table including all needed columns.
+        df: Données brutes au format "fiche client" (colonnes attendues :
+            ``policy_id``, ``lob``, ``annual_premium``, ``tenure_months``,
+            etc.).
 
     Returns:
-        A table with only the numeric feature columns the model can use.
+        DataFrame numérique ne contenant que les colonnes utilisables comme
+        entrée du modèle.
     """
-    # Create the builder and generate all features
     builder = ActuarialFeatureBuilder()
     df_features = builder.fit_transform(df)
 
-    # Remove columns that aren't useful for the model
-    feature_cols = [c for c in df_features.columns if c not in [
-        "policy_id", "customer_id", "inception_date", "expiry_date",
-        "lob", "region", "channel",  # raw text fields (we use encoded versions instead)
-        "churn_label",               # the answer — model shouldn't peek at this
-    ]]
-
+    feature_cols = [
+        c for c in df_features.columns
+        if c not in [
+            "policy_id", "customer_id", "inception_date", "expiry_date",
+            "lob", "region", "channel",   # libellés bruts (versions encodées créées plus haut)
+            "churn_label",                # la cible — le modèle ne doit pas la voir
+        ]
+    ]
     return df_features[feature_cols]
 
 
-# A human-readable description of each feature we create, useful for reports
+# Description lisible de chaque feature, pratique pour la documentation
+# automatique et les "model cards" exigées par la réglementation.
 FEATURE_DESCRIPTIONS = {
-    "premium_to_market_ratio": "Ratio of policy premium to LOB market median — key pricing adequacy signal",
-    "is_overpriced": "1 if premium > 120% of market rate",
-    "log_premium": "Log-transformed annual premium to reduce skewness",
-    "has_recent_claim": "1 if at least one claim in last 12 months",
-    "multi_claim": "1 if 2+ claims in last 12 months (experience effect)",
-    "claims_per_year": "Annualized claim frequency over full tenure",
-    "has_unsettled_claim": "1 if any open/pending claims (dissatisfaction proxy)",
-    "slow_settlement": "1 if average claim settlement > 45 days",
-    "tenure_years": "Policy duration in years",
-    "is_new_customer": "1 if tenure < 12 months",
-    "is_loyal_customer": "1 if tenure >= 5 years",
-    "never_renewed": "1 if this is the first policy year",
-    "is_multi_line": "1 if customer holds multiple active policies",
-    "is_young_adult": "1 if insured age between 18-30 (high price sensitivity)",
-    "is_online_customer": "1 if acquired via digital channel (higher churn risk)",
+    "premium_to_market_ratio": "Ratio prime/médiane de la branche — signal majeur d'adéquation tarifaire",
+    "is_overpriced": "1 si la prime dépasse 120 % du marché",
+    "log_premium": "Prime annuelle en échelle logarithmique pour atténuer les outliers",
+    "has_recent_claim": "1 si au moins un sinistre déclaré sur 12 mois",
+    "multi_claim": "1 si 2 sinistres ou plus sur 12 mois (effet expérience négative)",
+    "claims_per_year": "Fréquence annualisée des sinistres sur toute l'ancienneté",
+    "has_unsettled_claim": "1 si un sinistre est encore en cours (proxy d'insatisfaction)",
+    "slow_settlement": "1 si le délai moyen de règlement dépasse 45 jours",
+    "tenure_years": "Ancienneté du contrat en années",
+    "is_new_customer": "1 si l'ancienneté est < 12 mois",
+    "is_loyal_customer": "1 si l'ancienneté est ≥ 5 ans",
+    "never_renewed": "1 si c'est la première année du contrat",
+    "is_multi_line": "1 si le client détient plusieurs contrats actifs",
+    "is_young_adult": "1 si l'âge est compris entre 18 et 30 ans (forte sensibilité au prix)",
+    "is_online_customer": "1 si le client a été acquis via un canal digital (churn plus élevé)",
 }

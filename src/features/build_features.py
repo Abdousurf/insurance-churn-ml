@@ -1,26 +1,42 @@
-"""Turn raw insurance policy data into a set of useful numbers the model can learn from.
+"""Orchestration de la création de features (entraînement et inférence).
 
-Provides functions to build training and prediction-ready data tables
-from raw policy records using insurance-specific calculations.
+Deux contextes différents utilisent les features :
+
+    * **Entraînement** — on lit un fichier parquet, on apprend les
+      paramètres (médianes de marché par exemple) et on sauvegarde la
+      matrice de features finale pour la passer au modèle.
+    * **Inférence (production)** — on reçoit un (ou plusieurs) clients à
+      scorer en direct ; on doit appliquer **exactement les mêmes**
+      transformations que pendant l'entraînement, en utilisant le builder
+      déjà entraîné.
+
+Ce module fournit une fonction pour chacun de ces deux scénarios,
+ainsi que la liste centralisée des colonnes à exclure des features
+(:data:`NON_FEATURE_COLS`).
 """
 
 # ───────────────────────────────────────────────────────
-# WHAT THIS FILE DOES (in plain English):
-# This file reads raw insurance policy data and turns it
-# into a table of meaningful numbers (called "features")
-# that the churn prediction model can use to learn patterns.
-# It handles both training (learning) and live prediction
-# scenarios.
+# RÔLE DE CE FICHIER (en clair) :
+# C'est le "chef d'orchestre" qui appelle l'usine à features
+# (ActuarialFeatureBuilder) au bon moment et avec les bonnes
+# données : pendant l'entraînement, ou pendant le scoring en
+# production. Il centralise aussi la liste des colonnes que
+# le modèle ne doit pas voir (identifiants, libellés bruts,
+# cible) pour éviter les fuites de données.
 # ───────────────────────────────────────────────────────
 
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
 
 from src.features.actuarial_features import ActuarialFeatureBuilder
 
-
-# These columns are identifiers or raw text — not useful as model inputs,
-# so we exclude them from the final feature set.
+# Colonnes qu'on retire systématiquement avant de présenter les données
+# au modèle. Soit elles sont des identifiants techniques sans valeur
+# prédictive, soit elles existent déjà sous forme encodée (ex. ``lob``
+# vs ``age_segment_encoded``), soit elles contiennent la réponse qu'on
+# cherche à prédire (``churn_label``) — auquel cas les inclure
+# constituerait une fuite de données catastrophique.
 NON_FEATURE_COLS = [
     "policy_id", "customer_id", "inception_date", "expiry_date",
     "lob", "region", "channel",
@@ -32,37 +48,34 @@ def build_training_features(
     data_path: Path,
     output_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Read raw policy data from a file and create the training-ready feature table.
+    """Construit la matrice d'entraînement à partir d'un parquet de clients.
 
-    This loads a data file, separates the "did this customer leave?" label
-    from the rest of the data, then creates all the insurance-specific
-    calculated columns the model needs to learn from.
+    Cette fonction lit un fichier parquet, sépare la cible (``churn_label``)
+    du reste, applique le pipeline de feature engineering et — si demandé —
+    sauvegarde le tout sur disque.
 
     Args:
-        data_path: Where the raw policy data file lives on disk.
-        output_path: If provided, saves the finished feature table to this
-            location. If not provided, nothing is saved to disk.
+        data_path: Chemin vers le parquet de clients (au format produit
+            par ``src/data/download_opendata.py``).
+        output_path: Chemin où sauvegarder la matrice de features finale
+            (avec la cible). Si ``None``, rien n'est sauvegardé.
 
     Returns:
-        A pair of (features, labels) where features is the table of numbers
-        the model learns from, and labels tells us which customers actually left.
+        Une paire ``(X, y)``. ``X`` est la matrice numérique de features
+        prête pour le modèle, ``y`` est la série cible (0 = reste,
+        1 = part).
     """
-    # Load the raw data from a file
     df = pd.read_parquet(data_path)
 
-    # Separate the answer column ("did they churn?") from the rest
     y = df["churn_label"]
     X = df.drop(columns=["churn_label"])
 
-    # Create the feature builder and generate all insurance-specific columns
     builder = ActuarialFeatureBuilder()
     X_features = builder.fit_transform(X)
 
-    # Keep only the columns that are actual features (drop IDs, text fields, etc.)
     feature_cols = [c for c in X_features.columns if c not in NON_FEATURE_COLS]
     X_final = X_features[feature_cols]
 
-    # Optionally save the results to disk for later use
     if output_path is not None:
         out = X_final.copy()
         out["churn_label"] = y.values
@@ -71,38 +84,49 @@ def build_training_features(
     return X_final, y
 
 
-def build_inference_features(df: pd.DataFrame, builder: ActuarialFeatureBuilder) -> pd.DataFrame:
-    """Create the feature table for making predictions on new data.
+def build_inference_features(
+    df: pd.DataFrame,
+    builder: ActuarialFeatureBuilder,
+) -> pd.DataFrame:
+    """Construit la matrice de features pour l'inférence en production.
 
-    Unlike training, this uses a builder that has already learned from
-    past data so the new data gets processed the same way.
+    À la différence de :func:`build_training_features`, on n'apprend pas
+    de nouveaux paramètres ici : on réutilise un builder qui a déjà été
+    entraîné. C'est crucial pour que les features produites en production
+    soient cohérentes avec celles vues à l'entraînement.
 
     Args:
-        df: Raw policy data to prepare for prediction.
-        builder: A feature builder that has already been set up on training data.
+        df: DataFrame des clients à scorer (peut contenir une seule ligne).
+        builder: Builder déjà entraîné (``fit`` déjà appelé). En général
+            chargé depuis le fichier ``models/feature_builder.pkl`` produit
+            par le script d'entraînement.
 
     Returns:
-        A table containing only the model-ready feature columns.
+        DataFrame numérique de features, prêt à être passé au modèle.
     """
-    # Apply the same transformations used during training
     df_features = builder.transform(df)
-
-    # Keep only the feature columns, drop IDs and text fields
     feature_cols = [c for c in df_features.columns if c not in NON_FEATURE_COLS]
     return df_features[feature_cols]
 
 
-# This section runs only when you execute this file directly from the command line
 if __name__ == "__main__":
     import argparse
 
-    # Set up command-line options so the user can specify input/output files
-    parser = argparse.ArgumentParser(description="Build feature matrix from raw data")
-    parser.add_argument("--input", default="data/churn_dataset.parquet")
-    parser.add_argument("--output", default="data/features.parquet")
+    parser = argparse.ArgumentParser(
+        description="Construit la matrice de features depuis un parquet brut."
+    )
+    parser.add_argument(
+        "--input",
+        default="data/processed/insurance_churn_train.parquet",
+        help="Parquet d'entrée (clients au format standard)",
+    )
+    parser.add_argument(
+        "--output",
+        default="data/features.parquet",
+        help="Parquet de sortie avec features + cible",
+    )
     args = parser.parse_args()
 
-    # Run the feature building and print a quick summary
     X, y = build_training_features(Path(args.input), Path(args.output))
-    print(f"Feature matrix: {X.shape[0]} rows, {X.shape[1]} features")
-    print(f"Churn rate: {y.mean():.1%}")
+    print(f"Matrice de features : {X.shape[0]} lignes, {X.shape[1]} colonnes")
+    print(f"Taux de churn       : {y.mean():.1%}")

@@ -9,11 +9,18 @@ build/
 .env.local
 
 mlflow_artifacts/
+mlartifacts/
 mlruns/
+mlflow.db
 
 data/*.parquet
 data/*.csv
+data/raw/
+data/processed/
 !data/.gitkeep
+
+# Artefacts générés par l'entraînement (rejoués via `make train`)
+models/
 
 .ipynb_checkpoints/
 *.pyc
