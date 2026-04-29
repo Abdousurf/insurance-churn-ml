@@ -25,8 +25,8 @@ from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
     roc_curve,
-    calibration_curve,
 )
+from sklearn.calibration import calibration_curve
 
 
 def compute_business_metrics(

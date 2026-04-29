@@ -6,9 +6,11 @@ and the API endpoints using FastAPI's TestClient.
 
 import pytest
 import pandas as pd
+from unittest.mock import patch
+from contextlib import asynccontextmanager
 from fastapi.testclient import TestClient
 
-from src.api.main import classify_risk, estimate_clv, features_to_dataframe, app
+from src.api.utils import classify_risk, estimate_clv, features_to_dataframe
 from src.api.schemas import PolicyFeatures
 
 
@@ -156,13 +158,26 @@ class TestPolicyFeaturesSchema:
 
 # ── API endpoint tests ────────────────────────────────────────────────────
 
-client = TestClient(app, raise_server_exceptions=False)
+
+@pytest.fixture(scope="module")
+def client():
+    """Create a TestClient with MLflow mocked out so no server is needed."""
+    with patch("src.api.main.mlflow"):
+        from src.api.main import app
+
+        # Override lifespan to skip MLflow model loading
+        @asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        app.router.lifespan_context = _noop_lifespan
+        return TestClient(app, raise_server_exceptions=False)
 
 
 class TestHealthEndpoint:
     """Tests for the /health endpoint."""
 
-    def test_health_returns_ok(self):
+    def test_health_returns_ok(self, client):
         response = client.get("/health")
         assert response.status_code == 200
         data = response.json()
@@ -173,7 +188,7 @@ class TestHealthEndpoint:
 class TestModelInfoEndpoint:
     """Tests for the /model-info endpoint."""
 
-    def test_model_info_returns_metadata(self):
+    def test_model_info_returns_metadata(self, client):
         response = client.get("/model-info")
         assert response.status_code == 200
         data = response.json()
@@ -184,14 +199,14 @@ class TestModelInfoEndpoint:
 class TestPredictEndpoint:
     """Tests for the /predict endpoint."""
 
-    def test_predict_without_model_returns_503(self):
+    def test_predict_without_model_returns_503(self, client):
         response = client.post("/predict", json={
             "policy_id": "P1", "lob": "auto", "annual_premium": 800.0,
             "tenure_months": 24, "insured_age": 35, "channel": "Direct",
         })
         assert response.status_code == 503
 
-    def test_predict_batch_without_model_returns_503(self):
+    def test_predict_batch_without_model_returns_503(self, client):
         response = client.post("/predict/batch", json={
             "policies": [{
                 "policy_id": "P1", "lob": "auto", "annual_premium": 800.0,
